@@ -34,6 +34,8 @@ import std.path;
 import std.proc;
 import std.str;
 import std.toml;
+import std.http.url;
+import std.time;
 import std.version;
 import std.vm;
 
@@ -110,9 +112,18 @@ let command_spec = [
     cli.command "keygen" "make a key to sign releases with, and print its public half" [],
     cli.command "sign" "sign this package's last commit as RELEASE (default: v and its version) into mind.sig" [],
     cli.command "rotate" "hand this key's trust to a new one: rotate ed25519:NEW" [],
-    cli.command "publish" "add this package's last commit as RELEASE to the index in directory INDEX: publish INDEX [RELEASE]"
-        [cli.value "" "source" "URL" "where users fetch it from (default: [package] repository)"],
+    cli.command "publish" "submit this package's signed last commit as RELEASE to the index"
+        [cli.value "" "source" "URL" "where users fetch it from (default: [package] repository)",
+         cli.value "" "index" "INDEX" "github:OWNER/REPO, a URL, or a directory (default: the first configured)"],
     cli.command "search" "list the packages the indexes have whose names hold TEXT" [],
+    cli.command "audit" "check every fetched dependency for releases yanked and keys revoked since" [],
+    cli.command "index" "keep an index: init, admit, transfer, rotate, yank, keepers, checkpoint, cosign, submit, append, verify"
+        [cli.value "" "index" "INDEX" "github:OWNER/REPO, a URL, or a directory (default: the first configured)",
+         cli.value "" "out" "FILE" "write the entry to FILE, for other keepers to cosign, rather than submit it",
+         cli.list_of "" "keeper" "KEY" "init: a keeper's key (default: the signing key's)",
+         cli.value "" "threshold" "N" "init: how many keepers must sign together (default 1)",
+         cli.value "" "timekeeper" "KEY" "init: the key that signs checkpoints (default: the first keeper)",
+         cli.value "" "max-age" "DURATION" "init: how old the newest checkpoint may be, as 7d (default 0: no promise)"],
     cli.command "attest" "build the last commit reproducibly, and sign what went in and came out" [],
     cli.command "reproduce" "rebuild what this project's, or dependency DEP's, attestations describe, and compare"
         [cli.value "" "image" "FILE" "also check that FILE is the attested image"],
@@ -881,40 +892,98 @@ let with_checkout! m doing k = {
 
 // --- the index ----------------------------------------------------------------------
 //
-// index.dr says what an index is and why it can be trusted without trusting
-// whoever serves it. What is here is reading one -- from a directory or a URL
-// -- and holding it to what this machine saw of it before, and the commands.
+// index.dr says what an index is and why nobody keeping it has to be trusted.
+// What is here is where one is and how it is talked to:
+//
+// - `github:OWNER/REPO`, the shared kind: read with one request to GitHub's
+//   API, and written by opening an issue holding the signed entry, which the
+//   repository's Action checks and appends. Nobody clones anything, and the
+//   repository is free to host.
+// - an `https://` URL: a copy served from anywhere, read only.
+// - a directory: read and appended to here, which is what the Action does.
+//
+// With none configured the shared index, `github:dream-mindv2/index`, is
+// used, and its first line is pinned here: a reader who has never seen it
+// still cannot be handed another index in its place.
 
-/// The indexes to ask: `$MIND_INDEXES` (spaces or commas between them), then
-/// the project's `[fetch] indexes`.
+/// The index used when none is configured.
+let default_index = "github:dream-mindv2/index";
+
+/// The hash of the default index's first line, its keepers: what a first
+/// read is held to.
+let default_genesis = "sha256:ce53ecdbf4963c4bdac7a415ad1e6f7f628741489c99ae9e424c54efb27090da";
+
+/// The indexes to ask: `$MIND_INDEXES` (spaces or commas between them; `none`
+/// for none), then the project's `[fetch] indexes`, then the shared one when
+/// neither named any.
 let indexes! m = {
     let env = match os.env! "MIND_INDEXES" { () => [], v => str.words (str.replace "," " " v) };
-    list.unique (list.append env (manifest.indexes m))
+    let own = match m { () => [], pm => manifest.indexes pm };
+    match [env, own] {
+        [["none"], _] => [],
+        [[], []] => [default_index],
+        _ => list.unique (list.append env own),
+    }
 };
 
-/// An index's log, verified, and held to the length and head this machine
-/// remembers of it -- a copy that has lost entries or rewritten them is
-/// refused -- and then remembered as it is now.
-let read_index! place = {
-    let text = match fetch.is_url place {
-        true => {
-            let scratch = path.join (util.mind_home! ()) ("index-" + file.scratch_suffix! ());
-            let url = str.trim_suffix "/" place + "/" + index.file_name;
-            match fetch.run! "curl" "curl" ["--fail", "--silent", "--show-error", "--location", "--output", scratch, url] {
-                Result.error(why) => fail! (place + ": " + why),
-                _ => (),
-            }
-            let t = match file.read! scratch { () => "", t => t };
-            strict! t
-            file.remove_all! scratch
-            t
+/// `[owner, repo]` of a `github:` index, or `()`.
+let github_of place =
+    match str.starts_with "github:" place {
+        false => (),
+        true => match str.split_once "/" (str.trim_prefix "github:" place) { () => (), parts => parts },
+    };
+
+/// How old an index's newest checkpoint may be, when this machine says rather
+/// than its keepers: `$MIND_INDEX_MAX_AGE`, then `[fetch] index-max-age`, as a
+/// duration (`14d`; `0` for no limit).
+let max_age_override! m = {
+    let given = match os.env! "MIND_INDEX_MAX_AGE" {
+        () => match m { () => (), pm => manifest.index_max_age pm },
+        v => v,
+    };
+    match given {
+        () => (),
+        text => match time.parse_duration (to_string text) {
+            Result.ok(d) => d,
+            Result.error(why) => fail! ("the index's maximum age: " + why),
         },
-        false => match file.read! (path.join place index.file_name) {
+    }
+};
+
+/// The text of an index's log, wherever it is.
+let index_text! place = {
+    let fetched! url headers = {
+        let scratch = path.join (util.mind_home! ()) ("index-" + file.scratch_suffix! ());
+        file.mkdir_all! (util.mind_home! ())
+        match fetch.run! "curl" "curl" (list.concat [["--fail", "--silent", "--show-error", "--location"], headers,
+                                                     ["--output", scratch, url]]) {
+            Result.error(why) => { file.remove_all! scratch; fail! (place + ": " + why) },
+            _ => (),
+        }
+        let t = match file.read! scratch { () => "", t => t };
+        strict! t
+        file.remove_all! scratch
+        t
+    };
+    match [github_of place, fetch.is_url place] {
+        [[owner, repo], _] => fetched! ("https://api.github.com/repos/" + owner + "/" + repo + "/contents/" + index.file_name)
+                                       ["--header", "Accept: application/vnd.github.raw"],
+        [_, true] => fetched! (str.trim_suffix "/" place + "/" + index.file_name) [],
+        _ => match file.read! (path.join place index.file_name) {
             () => if io.is_dir! place { "" } else { fail! ("no index at " + place) },
             t => t,
         },
-    };
-    let s = match index.verify text { Result.ok(s) => s, Result.error(why) => fail! (place + ": " + why) };
+    }
+};
+
+/// An index, verified; held to its pinned first line, to what this machine
+/// read of it before, and to the freshness its keepers promised; and then
+/// remembered as it is now.
+let read_index! m place = {
+    let s = match index.verify (index_text! place) { Result.ok(s) => s, Result.error(why) => fail! (place + ": " + why) };
+    if place == default_index && default_genesis != () && index.head_at s 1 != default_genesis {
+        fail! (place + " does not begin with the keepers this mind was built to trust")
+    }
     let memo = path.join (path.join (util.mind_home! ()) "index") (fetch.slug place);
     match file.read! memo {
         () => (),
@@ -929,10 +998,64 @@ let read_index! place = {
             _ => (),
         },
     }
+    match index.fresh s (time.now! ()) (max_age_override! m) {
+        Result.error(why) => fail! ("the index at " + place + " is stale: " + why),
+        _ => (),
+    }
     file.mkdir_all! (path.dirname memo)
     file.write! memo (to_string (index.length s) + " " + index.head s + "\n")
     s
 };
+
+/// Hand entries to an index: appended, for a directory; an issue the
+/// repository's Action appends, for `github:` -- opened with `gh` when it is
+/// installed, and otherwise a link to open; and for anything else, the lines
+/// to send its keepers.
+let submit! place entries title = {
+    let body = str.join_str "\n" (list.map index.render entries);
+    match [github_of place, fetch.is_url place] {
+        [[owner, repo], _] => {
+            let text = "```\n" + body + "\n```\n";
+            let by_gh = fetch.run! "gh" "gh" ["issue", "create", "--repo", owner + "/" + repo, "--title", title, "--body", text];
+            match by_gh {
+                Result.ok(out) => console.print! ("submitted to " + place + ": " + str.trim out
+                                                  + "\nits Action checks the entry and appends it, usually within a minute"),
+                Result.error(_) => console.print! ("open this to submit it to " + place + ":\n  https://github.com/" + owner + "/" + repo
+                                                   + "/issues/new?title=" + url.encode title + "&body=" + url.encode text),
+            }
+        },
+        [_, true] => console.print! ("send this to the keepers of " + place + ":\n" + body),
+        _ => {
+            let n = append! place entries;
+            console.print! ("appended " + to_string n + " entr" + (if n == 1 { "y" } else { "ies" }) + " to " + path.join place index.file_name)
+        },
+    }
+};
+
+/// Place each entry at the end of the log in `dir` and write it, if all of
+/// them fit; answers how many. What the shared index's Action runs.
+let append! dir entries = {
+    let log_path = path.join dir index.file_name;
+    let before = match file.read! log_path { () => "", t => if str.is_empty t || str.ends_with "\n" t { t } else { t + "\n" } };
+    let after = list.fold (fn text e -> {
+        let s = match index.verify text { Result.ok(s) => s, Result.error(why) => fail! (log_path + ": " + why) };
+        let line = index.render (index.place s e);
+        match index.verify (text + line + "\n") {
+            Result.error(why) => fail! ("the entry does not fit: " + why + "\n  " + line),
+            _ => text + line + "\n",
+        }
+    }) before entries;
+    strict! after
+    file.mkdir_all! dir
+    file.write! log_path after
+    list.length entries
+};
+
+/// The entries in some text -- an issue's body, a file passed between keepers
+/// -- ignoring everything that is not one.
+let entries_in text =
+    list.flat_map (fn l -> match index.parse_line (str.trim l) { Option.some(e) => [e], Option.none => [] })
+                  (str.split "\n" text);
 
 /// `[name, requirement]` when what `mind add` was given is a name to look up
 /// rather than a place: no scheme, no separator, and no directory of that name
@@ -945,39 +1068,41 @@ let index_query! source =
     };
 
 /// The release of `name` the first index that has one offers:
-/// `[[release, source, hash, key], index]`.
+/// `[[release, source, hash, key], index, yanked]`.
 let find_in_indexes! m name req = {
     let revoked = (build.trust_context! m).[:revoked else []];
     let rec ask! places tried =
         match places {
-            [] => fail! (if list.is_empty tried { "no index is configured: set $MIND_INDEXES or [fetch] indexes" }
+            [] => fail! (if list.is_empty tried { "no index is configured: MIND_INDEXES is none" }
                          else { str.join_str "\n" (list.reverse tried) }),
-            [place, ..rest] => match index.lookup (read_index! place) name req revoked {
-                Result.ok(rel) => [rel, place],
+            [place, ..rest] => match index.lookup (read_index! m place) name req revoked {
+                Result.ok([rel, yanked]) => [rel, place, yanked],
                 Result.error(why) => ask! rest (list.cons (place + ": " + why) tried),
             },
         };
     ask! (indexes! m) []
 };
 
-/// Add this package's last commit to an index, as `RELEASE` from `--source`.
-/// The index is a directory -- a checkout of wherever it is kept -- and the new
-/// line goes to its keepers the way any change does. It is checked as a reader
-/// will check it before it is written.
-///
-/// The commit must already carry this key's signature of the release in its
-/// `mind.sig`: the index entry is how a user first finds the package and its
-/// author's key, and the package's own signature is what every later fetch of
-/// it -- from a mirror, from the cache -- is held to. The two must agree.
-let cmd_publish! m c args = {
-    let [place, rest] = match args {
-        [p, ..r] => [p, r],
-        [] => fail! "publish needs the index: a directory holding index.log",
+/// The index a command is about: `--index`, or the first configured.
+let index_of! m c =
+    match cli.get () c "index" {
+        () => match indexes! m { [first, .._] => first, [] => fail! "no index is configured" },
+        given => given,
     };
-    if fetch.is_url place { fail! "publish writes into a copy of the index on this machine; send its new line to whoever keeps it" }
+
+/// The project here, if there is one: index commands work outside one.
+let maybe_project! () = match manifest.find! (os.cwd! ()) { Result.ok(m) => m, _ => () };
+
+/// Submit this package's last commit as `RELEASE` from `--source`. The commit
+/// must already carry this key's signature of the release in its `mind.sig`:
+/// the index entry is how a user first finds the package and its author's
+/// key, and the package's own signature is what every later fetch of it is
+/// held to. The two must agree. A name nobody owns yet is listed once the
+/// keepers admit it.
+let cmd_publish! m c args = {
     let name = to_string (manifest.name m);
     if not (index.valid_name name) { fail! ("`" + name + "` is not a name an index can hold: lowercase letters, digits, - and _") }
-    let release = release_of! m rest "publish";
+    let release = release_of! m args "publish";
     let source = match [cli.get () c "source", manifest.repository m] {
         [(), ()] => fail! "say where users fetch it from: --source URL, or [package] repository",
         [(), r] => to_string r,
@@ -1000,14 +1125,17 @@ let cmd_publish! m c args = {
         fail! ("the last commit is not signed as " + release + " by " + sign.spell public
                + ": run `mind sign " + release + "`, commit " + sign.file_name + ", tag " + release + ", then publish")
     }
-    let log_path = path.join place index.file_name;
-    let before = match file.read! log_path { () => "", t => if str.is_empty t || str.ends_with "\n" t { t } else { t + "\n" } };
-    let s = match index.verify before { Result.ok(s) => s, Result.error(why) => fail! (log_path + ": " + why) };
-    let after = before + index.render (index.publish seed name source release h (index.head s)) + "\n";
-    match index.verify after { Result.error(why) => fail! why, _ => () }
-    file.mkdir_all! place
-    file.write! log_path after
-    console.print! ("published " + name + " " + release + " (" + h + ") from " + source + " to " + log_path)
+    let place = index_of! m c;
+    let s = read_index! m place;
+    match (index.State.names s).[name else ()] {
+        () => console.print! (name + " is new to " + place + ": it is listed once its keepers admit it to "
+                              + sign.spell public),
+        named => match index.Name.owner named {
+            () => (),
+            owner => if owner != sign.spell public { fail! (name + " in " + place + " belongs to " + to_string owner) },
+        },
+    }
+    submit! place [index.sign_with seed (index.entry "publish" [name, source, release, h])] ("publish " + name + " " + release)
 };
 
 /// Every package the indexes have whose name holds `text`, with its newest
@@ -1015,11 +1143,144 @@ let cmd_publish! m c args = {
 let cmd_search! m args = {
     let text = match args { [t] => t, [] => "", _ => fail! "search takes one piece of text" };
     let places = indexes! m;
-    if list.is_empty places { fail! "no index is configured: set $MIND_INDEXES or [fetch] indexes" }
+    if list.is_empty places { fail! "no index is configured: MIND_INDEXES is none" }
     strict! (list.map (fn place -> {
-        let found = index.search (read_index! place) text;
+        let found = index.search (read_index! m place) text;
         strict! (list.map (fn [n, r] -> console.print! (n + " " + r + "  (" + place + ")")) found)
     }) places)
+};
+
+/// Every fetched dependency held to the indexes and to what is known now: a
+/// release since yanked, or signed by a key since revoked. What to run in CI,
+/// where a build only checks what it has to.
+let cmd_audit! m o = {
+    let g = graph_of! m o;
+    let ns = fetched g;
+    let states = list.map (fn place -> [place, read_index! m place]) (indexes! m);
+    let revoked = (build.trust_context! m).[:revoked else []];
+    let findings = list.flat_map (fn n -> {
+        let [src, rel] = manifest.split_ref (manifest.dep_source (build.node_dep n));
+        let yanks = list.flat_map (fn [place, s] -> match index.find_release s src (to_string rel) {
+            [name, true] => [build.node_key n + " " + to_string rel + " was yanked from " + place + " (as " + name + ")"],
+            _ => [],
+        }) states;
+        let revocations = match build.node_signer n {
+            () => [],
+            k => if list.contains k revoked { [build.node_key n + " is signed by " + k + ", which has been revoked"] } else { [] },
+        };
+        list.append yanks revocations
+    }) ns;
+    match findings {
+        [] => console.print! ("audited " + to_string (list.length ns) + " fetched packages against "
+                              + to_string (list.length states) + " index(es): nothing to report"),
+        _ => {
+            strict! (list.map (fn f -> console.print! ("  " + f)) findings)
+            fail! (to_string (list.length findings) + " finding(s)")
+        },
+    }
+};
+
+/// `mind index VERB ..`: what keepers, owners and the shared index's Action do.
+let cmd_index! c args = {
+    let m = maybe_project! ();
+    let seed! () = signing_seed! c;
+    // An entry made here is submitted, or with `--out FILE` written to a
+    // file for other keepers to cosign and one of them to submit.
+    let made! e title = match cli.get () c "out" {
+        () => submit! (index_of! m c) [e] title,
+        out => {
+            file.write! out (index.render e + "\n")
+            console.print! ("wrote the entry to " + out + "; `mind index cosign " + out + "` adds a signature, "
+                            + "`mind index submit " + out + "` sends it")
+        },
+    };
+    let state! () = read_index! m (index_of! m c);
+    let key! k = match sign.key_bytes k { () => fail! ("`" + k + "` is not a key"), _ => k };
+    match args {
+        ["init", dir] => {
+            let threshold = match num.parse_int (to_string (cli.get "1" c "threshold")) { () => fail! "--threshold is a number", n => n };
+            let keepers = match cli.all c "keeper" { [] => [sign.spell (crypto.ed25519_public (seed! ()))], ks => list.map key! ks };
+            let timekeeper = key! (to_string (cli.get (list.head keepers) c "timekeeper"));
+            let age = to_string (cli.get "0" c "max-age");
+            match time.parse_duration age { Result.error(why) => fail! ("--max-age: " + why), _ => () }
+            if io.exists! (path.join dir index.file_name) { fail! (dir + " already holds an index") }
+            let e = index.Entry.set_prev index.genesis
+                        (index.sign_with (seed! ()) (index.entry "keepers" ["1", to_string threshold, str.join_str "," keepers, timekeeper, age]));
+            file.mkdir_all! dir
+            file.write! (path.join dir index.file_name) (index.render e + "\n")
+            console.print! ("began an index in " + dir + " kept by " + str.join_str ", " keepers + " (" + to_string threshold
+                            + " to sign), checkpointed by " + timekeeper + (if age == "0" { "" } else { " every " + age }))
+            console.print! ("its first line is " + index.line_hash (index.render e))
+        },
+        ["admit", name, owner] => made! (index.sign_with (seed! ()) (index.entry "admit" [name, key! owner])) ("admit " + name),
+        ["transfer", name, from, to] => made! (index.sign_with (seed! ()) (index.entry "transfer" [name, key! from, key! to])) ("transfer " + name),
+        ["rotate", name, new] => {
+            let old = sign.spell (crypto.ed25519_public (seed! ()));
+            made! (index.sign_with (seed! ()) (index.entry "rotate" [name, old, key! new])) ("rotate " + name)
+        },
+        ["yank", name, release] => made! (index.sign_with (seed! ()) (index.entry "yank" [name, release])) ("yank " + name + " " + release),
+        ["keepers", threshold, keys, timekeeper, age] => {
+            let s = state! ();
+            strict! (list.map key! (str.split "," keys))
+            made! (index.sign_with (seed! ()) (index.entry "keepers" [to_string (index.State.epoch s + 1), threshold, keys, key! timekeeper, age]))
+                  "keepers"
+        },
+        ["checkpoint"] => {
+            let stamp = time.rfc3339 (time.of_unix_seconds (time.unix_seconds (time.now! ())));
+            let place = index_of! m c;
+            // A checkpoint vouches for the head it is placed on, so it is
+            // made and appended in one step, which only a directory allows.
+            if github_of place != () || fetch.is_url place { fail! "a checkpoint is appended where the log is: give --index DIR" }
+            // Read without the freshness check: making a stale index fresh is
+            // what this is for.
+            let s = match index.verify (index_text! place) { Result.ok(s) => s, Result.error(why) => fail! (place + ": " + why) };
+            let e = index.sign_with (seed! ()) (index.place s (index.entry "checkpoint" [stamp]));
+            let after = index_text! place + index.render e + "\n";
+            match index.verify after { Result.error(why) => fail! why, _ => () }
+            // Forced before the write, which would otherwise empty the file
+            // before the read in `after` happened.
+            strict! after
+            file.write! (path.join place index.file_name) after
+            console.print! ("checkpointed " + place + " at " + stamp)
+        },
+        ["cosign", f] => {
+            let e = match entries_in (match file.read! f { () => fail! ("no entry at " + f), t => t }) {
+                [e] => e,
+                _ => fail! (f + " should hold one entry"),
+            };
+            let signed = index.sign_with (seed! ()) e;
+            strict! signed
+            file.write! f (index.render signed + "\n")
+            console.print! ("signed; it has " + to_string (list.length (index.Entry.sigs signed)) + " signature(s)")
+        },
+        ["submit", f] => {
+            let es = entries_in (match file.read! f { () => fail! ("no entry at " + f), t => t });
+            if list.is_empty es { fail! (f + " holds no entry") }
+            submit! (index_of! m c) es (index.Entry.kind (list.head es) + " " + str.join_str " " (index.Entry.fields (list.head es)))
+        },
+        ["append", dir, f] => {
+            // The Action's step: whatever entries a submission holds, placed
+            // and checked. A checkpoint is not taken from outside, since it
+            // would vouch for a head its signer never saw.
+            let es = list.filter (fn e -> index.Entry.kind e != "checkpoint")
+                                 (entries_in (match file.read! f { () => "", t => t }));
+            if list.is_empty es { fail! "the submission holds no entry" }
+            let n = append! dir es;
+            console.print! ("appended " + to_string n)
+        },
+        ["verify"] => {
+            let place = index_of! m c;
+            let s = read_index! m place;
+            let names = index.State.names s;
+            console.print! (place + ": " + to_string (index.length s) + " entries, " + to_string (list.length (map.keys names))
+                            + " names, kept by " + to_string (index.State.threshold s) + " of " + str.join_str ", " (index.State.keepers s))
+            console.print! (match index.State.checkpoint s {
+                () => "  never checkpointed",
+                [t, n] => "  checkpointed at " + time.rfc3339 t + " (entry " + to_string n + ")",
+            })
+        },
+        _ => fail! "mind index init DIR | admit NAME KEY | transfer NAME FROM TO | rotate NAME NEW | yank NAME RELEASE | keepers N KEYS TIMEKEEPER AGE | checkpoint | cosign FILE | submit FILE | append DIR FILE | verify",
+    }
 };
 
 // --- attesting and reproducing builds ---------------------------------------------
@@ -1051,6 +1312,7 @@ let cmd_attest! m o c args = {
     let release = release_of! m args "attest";
     let compiler = match build.compiler_digest! m o { Result.ok(d) => d, Result.error(why) => fail! why };
     let std = build.std_digest! ();
+    let vm = build.vm_identity! ();
     let kept = build.output_of m o;
     let [source, image] = with_checkout! m "attesting" (fn dir -> {
         let source = fetch.tree_hash! dir;
@@ -1061,10 +1323,10 @@ let cmd_attest! m o c args = {
         strict! image
         [source, image]
     });
-    let built = sign.Built.make source compiler std (build.profile_of o) image;
+    let built = sign.Built.make source compiler std vm (build.profile_of o) image;
     add_statement! root (sign.attest seed release built)
     console.print! ("attested release " + release + " (" + build.profile_of o + "): " + image)
-    console.print! ("  from " + source + "\n  by compiler " + compiler + "\n  with std " + std)
+    console.print! ("  from " + source + "\n  by compiler " + compiler + "\n  with std " + std + "\n  on VM " + vm)
     console.print! ("  the image is " + kept + "; commit " + sign.file_name + " and publish both")
 };
 
@@ -1078,6 +1340,7 @@ let cmd_attest! m o c args = {
 let cmd_reproduce! m o c args = {
     let compiler = match build.compiler_digest! m o { Result.ok(d) => d, Result.error(why) => fail! why };
     let std = build.std_digest! ();
+    let vm = build.vm_identity! ();
     let file_hash = match cli.get () c "image" {
         () => (),
         f => "sha256:" + crypto.hex (crypto.digest_file! :sha256 f),
@@ -1085,7 +1348,7 @@ let cmd_reproduce! m o c args = {
     let statements_in! dir = match file.read! (path.join dir sign.file_name) { () => [], t => sign.statements t };
     let results = match args {
         [] => with_checkout! m "reproducing" (fn dir -> {
-            let rs = reproduce_in! dir o (sign.builds (statements_in! (manifest.root m))) compiler std file_hash;
+            let rs = reproduce_in! dir o (sign.builds (statements_in! (manifest.root m))) compiler std vm file_hash;
             strict! (list.forced rs)
             rs
         }),
@@ -1105,7 +1368,7 @@ let cmd_reproduce! m o c args = {
             // the cache is not to be written into.
             let scratch = path.join (util.mind_home! ()) ("reproduce-" + file.scratch_suffix! ());
             match fetch.run! "cp" "cp" ["-R", build.node_dir n, scratch] { Result.error(why) => fail! why, _ => () }
-            let rs = reproduce_in! scratch o mine compiler std file_hash;
+            let rs = reproduce_in! scratch o mine compiler std vm file_hash;
             strict! (list.forced rs)
             file.remove_all! scratch
             rs
@@ -1120,7 +1383,12 @@ let cmd_reproduce! m o c args = {
 
 /// Each attestation against a rebuild in `dir`, one line apiece: `:reproduced`,
 /// `:differs` or `:skipped`. A profile is built once however many keys attest it.
-let reproduce_in! dir o attested compiler std file_hash = {
+///
+/// The VM is not required to match. Its version is in the attestation, and a
+/// rebuild on another VM that comes out the same counts like any other; one
+/// that comes out different is skipped and said to be on another VM, since
+/// the VM is the one difference left that could explain it.
+let reproduce_in! dir o attested compiler std vm file_hash = {
     let source = fetch.tree_hash! dir;
     let say! line = console.print! ("  " + line);
     let rec go! rest built acc =
@@ -1149,9 +1417,16 @@ let reproduce_in! dir o attested compiler std file_hash = {
                         f => if f == sign.Built.image b { "; the image given is it" } else { "; the image given is NOT it (" + f + ")" },
                     };
                     let same = image == sign.Built.image b && (file_hash == () || file_hash == image);
-                    say! ((if same { "reproduced " } else { "DIFFERS    " }) + who + ": " + image
-                          + (if image == sign.Built.image b { "" } else { ", attested " + sign.Built.image b }) + file_says)
-                    go! more built.[p => image] (list.cons (if same { :reproduced } else { :differs }) acc)
+                    let other_vm = image != sign.Built.image b && sign.Built.vm b != vm;
+                    if other_vm {
+                        say! ("skipped " + who + ": rebuilt as " + image + ", but it was built on VM " + sign.Built.vm b
+                              + " and this is " + vm + file_says)
+                        go! more built.[p => image] (list.cons :skipped acc)
+                    } else {
+                        say! ((if same { "reproduced " } else { "DIFFERS    " }) + who + ": " + image
+                              + (if image == sign.Built.image b { "" } else { ", attested " + sign.Built.image b }) + file_says)
+                        go! more built.[p => image] (list.cons (if same { :reproduced } else { :differs }) acc)
+                    }
                 }
             },
         };
@@ -1269,12 +1544,17 @@ let cmd_add! m c args = {
     let found = match index_query! given { () => (), [name, req] => find_in_indexes! m name req };
     let source = match found {
         () => given,
-        [[rel, src, _, _], _] => if manifest.is_tarball src { src } else { src + "#" + rel },
+        [[rel, src, _, _], _, _] => if manifest.is_tarball src { src } else { src + "#" + rel },
     };
+    match found {
+        [[rel, _, _, _], place, true] => console.error! ("warning: " + rel + " has been yanked from " + place
+                                                         + "; it is used only because it was asked for exactly"),
+        _ => (),
+    }
     let named = add_spec! source c;
     let raw = match found {
         () => named,
-        [[_, _, _, key], _] => named.["keys" => list.unique (list.append (sign.listed (named.["keys" else ()])) [key])],
+        [[_, _, _, key], _, _] => named.["keys" => list.unique (list.append (sign.listed (named.["keys" else ()])) [key])],
     };
     // A directory is typed relative to where you are and stored relative to
     // the manifest, which is where it will be read from.
@@ -1293,13 +1573,13 @@ let cmd_add! m c args = {
             }
             match found {
                 () => (),
-                [[rel, _, h, _], place] => if fetch.hash! probe dir != h {
+                [[rel, _, h, _], place, _] => if fetch.hash! probe dir != h {
                     fail! (source + " is not what " + place + " says " + rel + " is: it hashes to "
                            + to_string (fetch.hash! probe dir) + ", and the index says " + h)
                 },
             }
             let key = match [found, cli.get () c "name"] {
-                [[_, _], ()] => list.head (index_query! given),
+                [[_, _, _], ()] => list.head (index_query! given),
                 _ => add_name! source dir c,
             };
             let manifest_file = path.join (manifest.root m) "mind.toml";
@@ -1495,7 +1775,9 @@ let run_command! c theirs = {
                   "rotate" => cmd_rotate! (project! ()) c (cli.rest c),
                   "attest" => cmd_attest! (project! ()) o c (cli.rest c),
                   "publish" => cmd_publish! (project! ()) c (cli.rest c),
-                  "search" => cmd_search! (project! ()) (cli.rest c),
+                  "search" => cmd_search! (maybe_project! ()) (cli.rest c),
+                  "audit" => cmd_audit! (project! ()) o,
+                  "index" => cmd_index! c (cli.rest c),
                   "reproduce" => cmd_reproduce! (project! ()) o c (cli.rest c),
                   "revoke" => cmd_revoke! (project! ()) c (cli.rest c),
                   "add"   => cmd_add! (project! ()) c (cli.rest c),

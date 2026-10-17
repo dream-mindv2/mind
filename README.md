@@ -127,8 +127,10 @@ Given twice, the second is relative to the first.
 | `mind revoke [CERT]` | publish this key's revocation in `mind.sig` |
 | `mind attest [RELEASE]` | build the last commit reproducibly and sign what went in and came out |
 | `mind reproduce [DEP]` | rebuild what the attestations describe and compare; `--image FILE` checks a download |
-| `mind publish INDEX [RELEASE]` | add this package's signed release to the index in directory `INDEX` |
+| `mind publish [RELEASE]` | submit this package's signed release to the index |
 | `mind search [TEXT]` | the packages the indexes have whose names hold `TEXT` |
+| `mind audit` | every fetched dependency checked for releases yanked and keys revoked since |
+| `mind index VERB` | keep an index: `init`, `admit`, `transfer`, `rotate`, `yank`, `keepers`, `checkpoint`, `cosign`, `submit`, `append`, `verify` |
 | `mind deps`, `mind tree` | every package the project resolves to, as a list or as who needs what |
 | `mind info` | what this build would run, without running it |
 | `mind options` | every package's options, and what this build sets them to |
@@ -343,6 +345,10 @@ build` would, which is the file to publish. `mind reproduce` rebuilds every
 attestation it can and says which match. One made with another compiler or
 standard library cannot be repeated here and is reported as skipped, not as
 a failure; a rebuild that differs, or nothing reproduced at all, exits 1.
+The VM the compiler ran on is recorded too (`dream --version`): a rebuild on
+another VM that comes out the same counts, and one that comes out different
+is skipped and said to be on another VM, since that is the difference left
+to explain it.
 For a dependency only attestations by keys the project trusts for it count.
 
 The builds are byte for byte the same anywhere because the compiler is told
@@ -354,42 +360,62 @@ are all that is left to agree on, and the attestation names each.
 ### The index
 
 Packages need no registry, but finding one by name needs somewhere names are
-written down. An index is that: a file, `index.log`, served from any
-directory or URL, kept wherever its keepers like -- a git repository that
-takes entries as pull requests is the obvious place -- and mirrored freely,
-because nothing in it has to be taken on trust.
-
-```
-mind sign v1.4 && git add mind.sig && git commit -m v1.4 && git tag v1.4
-mind publish ../index          # add the signed release to a checkout of the index
-```
-
-```toml
-[fetch]
-indexes = ["https://example.com/dream-index"]   # or $MIND_INDEXES
-```
+written down. An index is that: a log, `index.log`, of which release of which
+name is at which source and hashes to what. The shared one is
+[dream-mindv2/index](https://github.com/dream-mindv2/index), used when no
+other is configured; it costs nothing to run and nobody keeping it has to be
+trusted.
 
 ```
 mind search json
 mind add json                  # the newest release, held to its author's key
 mind add json@^1.2             # the newest a requirement accepts
+mind audit                     # any dependency since yanked, or signed by a revoked key
 ```
 
-Each line names a package, its source, its release and that release's tree
-hash, signed by the author. Why it can be trusted with nobody in charge:
+Publishing is a signed release and one command. `mind publish` checks the
+release is signed in the package, signs an entry, and opens an issue on the
+index (with `gh` if it is installed, otherwise a link to open); the index's
+GitHub Action checks the entry and appends it. Nobody clones the index.
 
-- **A name belongs to the key that first published it.** Later releases must
-  be signed by that key, or by one it handed the name to (a `rotate` line).
-  Nobody can publish under a name that is not theirs.
+```
+mind sign v1.4 && git add mind.sig && git commit -m v1.4 && git tag v1.4 && git push --tags
+mind publish --source https://github.com/you/json
+```
+
+Why it can be trusted with nobody in charge -- every reader checks all of it:
+
+- **Keepers admit names.** The log's first line names its keepers and how
+  many must sign together. Anyone may publish under a name nobody owns, but
+  those releases count for nothing until the keepers admit an owner, and then
+  only the owner's do. A name admitted to the wrong key is moved with a
+  `transfer`, which brings back the releases the rightful author published.
+  An owner can hand a name on (`rotate`).
 - **It is a hash chain**: each line holds the hash of the one before, so
-  entries can be added and never changed, removed or reordered unnoticed.
+  entries can be added and never changed, removed or reordered. Signatures do
+  not cover that hash, so an appender can place a signed entry wherever the
+  log has got to.
 - **Every machine remembers the last head it read** (`$MIND_HOME/index`) and
-  refuses a copy that no longer has it, or has fewer entries -- an index
-  rewritten, or an old one served to hide a release.
+  refuses a copy that no longer has it, or has fewer entries. The shared
+  index's first line is built into `mind`, so even a first read cannot be
+  handed another index.
+- **It must be fresh.** A timekeeper key, which can sign nothing else, signs a
+  checkpoint every day, and a reader refuses an index whose newest checkpoint
+  is older than its keepers promised (7 days for the shared one) -- a host
+  cannot hold a machine on an old copy to hide a release. `[fetch]
+  index-max-age` or `$MIND_INDEX_MAX_AGE` overrides it, `0` for no limit.
+- **Releases can be yanked** (`mind index yank NAME RELEASE`) by their owner
+  or the keepers. A yanked release is never chosen by a requirement, only by
+  asking for it exactly, and `mind audit` reports one a project still uses.
 - **What is added is held to the index.** `mind add NAME` writes the author's
-  key into the entry, refuses bytes other than the ones the index names, and
-  the lock pins them from then on. `mind publish` requires the release to be
-  signed in the package itself, so the two always agree.
+  key into the entry and refuses bytes other than the ones the index names,
+  and the lock pins them from then on.
+
+Other indexes are `[fetch] indexes` or `$MIND_INDEXES` (`none` for none): a
+`github:OWNER/REPO` like the shared one, any `https://` URL serving a copy, or
+a directory. `mind index` is the keepers' side -- `init`, `admit`, `transfer`,
+`keepers`, `checkpoint`, and `--out FILE`/`cosign FILE`/`submit FILE` for
+entries several keepers must sign.
 
 ### Cycles
 
@@ -558,6 +584,8 @@ on.
 | `MINDV2_PATH` | the installation: where `dreams.dream` is found |
 | `MIND_STDLIB` | the directory holding `std` |
 | `MIND_HOME` | fetched packages, the build cache and the unit cache (default `~/.mind`) |
+| `MIND_INDEXES` | the indexes to look names up in, before `[fetch] indexes`; `none` for none |
+| `MIND_INDEX_MAX_AGE` | how old an index's newest checkpoint may be, overriding its keepers (`14d`; `0` for no limit) |
 | `MIND_MIRRORS` | where to fetch a locked package whose source is down, before `[fetch] mirrors` |
 | `MIND_BUILD_CACHE` | where build steps are cached (default `$MIND_HOME/build`) |
 | `MIND_UNITS` | where the compiler keeps each module's work between builds (default `$MIND_HOME/units`; `off` for none). Entries unused for 30 days are removed |

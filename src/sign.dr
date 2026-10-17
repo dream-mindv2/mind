@@ -26,9 +26,10 @@
 //     release ed25519:KEY v1.4 sha256:HASH SIG    KEY made these bytes as v1.4
 //     rotate ed25519:OLD ed25519:NEW SIG          OLD hands over to NEW
 //     revoke ed25519:KEY SIG                      KEY is not to be trusted again
-//     build ed25519:KEY v1.4 SOURCE COMPILER STD PROFILE IMAGE SIG
+//     build ed25519:KEY v1.4 SOURCE COMPILER STD VM PROFILE IMAGE SIG
 //                                                 built from SOURCE by COMPILER
-//                                                 with STD as PROFILE, it is IMAGE
+//                                                 with STD on VM as PROFILE, it
+//                                                 is IMAGE
 //
 // The last is a build attestation (`mind attest`): every part of it is a
 // hash, so anyone holding the same source, compiler and standard library can
@@ -102,6 +103,10 @@ mapping Built {
     source : :string
     compiler : :string
     std : :string
+    // The VM the compiler ran on, `0.1.0+COMMIT` as `dream --version` names it.
+    // Not a hash: the same VM built twice is two binaries, and what matters
+    // is which source it was built from.
+    vm : :string
     profile : :string
     image : :string
 }
@@ -115,7 +120,7 @@ let rotate_message old new = "mind-rotate-v1\nfrom " + spell old + "\nto " + spe
 let build_message : :string -> Built -> :string;
 let build_message name b =
     "mind-build-v1\nrelease " + name + "\nsource " + Built.source b + "\ncompiler " + Built.compiler b
-    + "\nstd " + Built.std b + "\nprofile " + Built.profile b + "\nimage " + Built.image b + "\n";
+    + "\nstd " + Built.std b + "\nvm " + Built.vm b + "\nprofile " + Built.profile b + "\nimage " + Built.image b + "\n";
 
 let revoke_message : :string -> :string;
 let revoke_message key = "mind-revoke-v1\nkey " + spell key + "\n";
@@ -160,7 +165,7 @@ let render s = match s {
     Statement.rotate(old, new, sig) => "rotate " + spell old + " " + spell new + " " + crypto.hex sig,
     Statement.revoke(k, sig) => "revoke " + spell k + " " + crypto.hex sig,
     Statement.build(k, n, b, sig) => str.join_str " " ["build", spell k, n, Built.source b, Built.compiler b,
-                                                       Built.std b, Built.profile b, Built.image b, crypto.hex sig],
+                                                       Built.std b, Built.vm b, Built.profile b, Built.image b, crypto.hex sig],
 };
 
 /// One line read, or none for a comment, a blank, or a line of the wrong
@@ -185,10 +190,10 @@ let parse_line line =
             [_, ()] => Option.none,
             [kb, sb] => Option.some (Statement.revoke kb sb),
         },
-        ["build", k, n, source, compiler, std, profile, image, s] => match [key_bytes k, crypto.unhex s] {
+        ["build", k, n, source, compiler, std, vm, profile, image, s] => match [key_bytes k, crypto.unhex s] {
             [(), _] => Option.none,
             [_, ()] => Option.none,
-            [kb, sb] => Option.some (Statement.build kb n (Built.make source compiler std profile image) sb),
+            [kb, sb] => Option.some (Statement.build kb n (Built.make source compiler std vm profile image) sb),
         },
         _ => Option.none,
     };
@@ -380,7 +385,7 @@ when test {
                                                                         rotate seed pub3, release seed "v2" h])))) ),
         test.case "a build attestation reads back, verifies, and replaces only its own profile's"
             $( {
-                   let built p = Built.make h "sha256:c" "sha256:s" p "sha256:i";
+                   let built p = Built.make h "sha256:c" "sha256:s" "0.1.0+abc" p "sha256:i";
                    let text = file [attest seed "v1" (built "debug"), attest seed "v1" (built "release"),
                                     attest seed "v2" (built "release")];
                    test.eq! [[pub, "v1", built "debug"], [pub, "v2", built "release"]] (builds (statements text))

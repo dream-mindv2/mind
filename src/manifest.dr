@@ -154,6 +154,10 @@ let indexes m =
             v => match type_of v { :list => v, _ => [v] },
         });
 
+/// `[fetch] index-max-age`: how old an index's newest checkpoint may be,
+/// overriding what its keepers promised -- a duration, `0` for no limit.
+let index_max_age m = toml.get () (doc m) "fetch" "index-max-age";
+
 /// Where the package is published from, for `mind publish`: `[package]
 /// repository`, or `()`.
 let repository m = toml.get () (doc m) "package" "repository";
