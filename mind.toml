@@ -3,4 +3,5 @@
 [package]
 name = "mind"
 version = "0.1.0"
+repository = "https://github.com/dream-mindv2/mind"
 description = "The Dream build tool"
