@@ -919,6 +919,55 @@ let resolve! m o accept = {
     }
 };
 
+// --- reproducible builds ----------------------------------------------------------
+//
+// A build that someone else must be able to repeat byte for byte -- `mind
+// attest` and `mind reproduce` -- has to come out the same wherever the files
+// happen to be. The image records the path of every source file, so those are
+// handed to the compiler to rewrite: each package's directory as the key it is
+// known by, the project's as its name, the standard library's as nothing, which
+// leaves `std/src/list.dr` -- names that are the same on every machine.
+
+/// The directory with a separator after it, so that `/a/b` does not also
+/// claim `/a/bc`.
+let with_separator! p = str.trim_suffix "x" (path.join (path.absolute! p) "x");
+
+/// `--remap-path-prefix` for every package in the build, longest directory
+/// first, so a package inside another's directory is named for itself; or
+/// nothing, for a build nobody asked to be reproducible.
+let remap_args! m o g =
+    if not (option o :reproducible false) { [] }
+    else {
+        let name = match manifest.name m { "" => "root", n => n };
+        let pairs = list.unique (list.concat [
+            [[with_separator! (manifest.root m), name + "/"]],
+            map (fn n -> [with_separator! (node_abs n), node_key n + "/"]) (every_node g),
+            [[with_separator! (stdlib_root! ()), ""]],
+        ]);
+        repeated "--remap-path-prefix"
+                 (map (fn [from, to] -> from + "=" + to)
+                      (list.sort_on (fn pair -> 0 - str.byte_length (list.head pair)) pairs))
+    };
+
+/// The compiler this build would run, named by the digest of its image, as
+/// `dreams --version` reports it: `sha256:HEX`. What a reproduction must run
+/// to have any hope of the same bytes, which a version number does not pin.
+let compiler_digest! m o =
+    match compiler_command! o (choose_compiler! m (option o :compiler ())) {
+        [program, lead] => {
+            let r = os.exec_for! program (list.append lead ["--version"]) 60000;
+            let out = r.[:out else ""];
+            match str.split_once "(image " out {
+                () => Result.error ("the compiler does not say which image it is (`--version` printed `"
+                                    + str.trim out + "`); attesting a build needs one that does"),
+                [_, rest] => Result.ok (str.trim (list.head (str.split ")" rest))),
+            }
+        },
+    };
+
+/// The standard library this build would compile against, as its tree hash.
+let std_digest! () = fetch.tree_hash! (path.join (stdlib_root! ()) "std");
+
 /// How the compiler is told about one package. `-L DIR` when the package
 /// already calls itself by the key, which every compiler understands;
 /// `-L KEY=DIR` otherwise, which names it.
@@ -1345,6 +1394,7 @@ let compile_args! m o =
                                                   option o :hosts []])),
               setting_args m o g,
               units_args! (),
+              remap_args! m o g,
               from_scripts,
               carried,
               ["-o", output_of m o],

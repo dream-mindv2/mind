@@ -43,6 +43,7 @@ import serve;
 import build;
 import config;
 import fetch;
+import index;
 import manifest;
 import sign;
 import util;
@@ -109,6 +110,12 @@ let command_spec = [
     cli.command "keygen" "make a key to sign releases with, and print its public half" [],
     cli.command "sign" "sign this package's last commit as RELEASE (default: v and its version) into mind.sig" [],
     cli.command "rotate" "hand this key's trust to a new one: rotate ed25519:NEW" [],
+    cli.command "publish" "add this package's last commit as RELEASE to the index in directory INDEX: publish INDEX [RELEASE]"
+        [cli.value "" "source" "URL" "where users fetch it from (default: [package] repository)"],
+    cli.command "search" "list the packages the indexes have whose names hold TEXT" [],
+    cli.command "attest" "build the last commit reproducibly, and sign what went in and came out" [],
+    cli.command "reproduce" "rebuild what this project's, or dependency DEP's, attestations describe, and compare"
+        [cli.value "" "image" "FILE" "also check that FILE is the attested image"],
     cli.command "revoke" "publish this key's revocation in mind.sig: revoke [CERTIFICATE]" [],
     cli.command "deps"  "list every package this project resolves to" [],
     cli.command "tree"  "show the dependency tree" [],
@@ -815,49 +822,343 @@ let signing_seed! c = {
 let cmd_sign! m c args = {
     let root = manifest.root m;
     let seed = signing_seed! c;
-    let release = match args {
+    let release = release_of! m args "sign";
+    let h = with_checkout! m "signing" (fn dir -> fetch.tree_hash! dir);
+    let public = crypto.ed25519_public seed;
+    add_statement! root (sign.release seed release h)
+    console.print! ("signed " + h + " as release " + release + " by " + sign.spell public)
+    console.print! (if in_git! root { "commit " + sign.file_name + " -- it is not part of what it signs -- and tag it " + release }
+                    else { "pack this directory as it stands, " + sign.file_name + " with it" })
+};
+
+/// The release a command signs as: the one named, or `v` and the manifest's
+/// version.
+let release_of! m args what =
+    match args {
         [] => match version.parse (to_string (manifest.version m)) {
             Result.ok(v) => version.tag v,
-            Result.error(why) => fail! ("give the release to sign as, such as `mind sign v1.4`: " + why),
+            Result.error(why) => fail! ("give the release to " + what + " as, such as `mind " + what + " v1.4`: " + why),
         },
-        [name] => name,
-        _ => fail! "sign takes one release name, the tag it will be released as",
+        [name] => if list.length (str.words name) == 1 { name } else { fail! ("a release name has no spaces: `" + name + "`") },
+        _ => fail! (what + " takes one release name, the tag it will be released as"),
     };
-    if not (list.is_empty (str.words release)) && list.length (str.words release) != 1 {
-        fail! ("a release name has no spaces: `" + release + "`")
-    }
-    let in_git = io.exists! (path.join root ".git");
-    let h = match in_git {
-        false => fetch.tree_hash! root,
+
+let in_git! root = io.exists! (path.join root ".git");
+
+/// `k` of this package as a fetch of its last commit would find it: a clone,
+/// made in a scratch directory and removed afterwards, so that untracked
+/// files and uncommitted edits are not in it -- and said not to be. Outside
+/// git it is the directory as it stands. Whatever `k` answers must be forced
+/// before it is returned, since the clone is gone afterwards.
+let with_checkout! m doing k = {
+    let root = manifest.root m;
+    match in_git! root {
+        false => k root,
         true => {
-            let scratch = path.join (util.mind_home! ()) ("sign-" + file.scratch_suffix! ());
-            let answer = match fetch.run! "git clone" "git" ["clone", "--quiet", root, scratch] {
+            match fetch.run! "git status" "git" ["-C", root, "status", "--porcelain"] {
+                Result.ok(out) => {
+                    let pending = list.filter (fn l -> not (str.is_empty (str.trim l)) && not (str.ends_with sign.file_name l))
+                                              (str.split "\n" out);
+                    if not (list.is_empty pending) {
+                        console.error! ("note: " + doing + " the last commit; " + to_string (list.length pending)
+                                        + " uncommitted change(s) are not part of it")
+                    }
+                },
+                _ => (),
+            }
+            let scratch = path.join (util.mind_home! ()) ("checkout-" + file.scratch_suffix! ());
+            match fetch.run! "git clone" "git" ["clone", "--quiet", root, scratch] {
                 Result.error(why) => { file.remove_all! scratch; fail! why },
-                _ => fetch.tree_hash! scratch,
-            };
+                _ => (),
+            }
+            let answer = k scratch;
             strict! answer
             file.remove_all! scratch
             answer
         },
+    }
+};
+
+// --- the index ----------------------------------------------------------------------
+//
+// index.dr says what an index is and why it can be trusted without trusting
+// whoever serves it. What is here is reading one -- from a directory or a URL
+// -- and holding it to what this machine saw of it before, and the commands.
+
+/// The indexes to ask: `$MIND_INDEXES` (spaces or commas between them), then
+/// the project's `[fetch] indexes`.
+let indexes! m = {
+    let env = match os.env! "MIND_INDEXES" { () => [], v => str.words (str.replace "," " " v) };
+    list.unique (list.append env (manifest.indexes m))
+};
+
+/// An index's log, verified, and held to the length and head this machine
+/// remembers of it -- a copy that has lost entries or rewritten them is
+/// refused -- and then remembered as it is now.
+let read_index! place = {
+    let text = match fetch.is_url place {
+        true => {
+            let scratch = path.join (util.mind_home! ()) ("index-" + file.scratch_suffix! ());
+            let url = str.trim_suffix "/" place + "/" + index.file_name;
+            match fetch.run! "curl" "curl" ["--fail", "--silent", "--show-error", "--location", "--output", scratch, url] {
+                Result.error(why) => fail! (place + ": " + why),
+                _ => (),
+            }
+            let t = match file.read! scratch { () => "", t => t };
+            strict! t
+            file.remove_all! scratch
+            t
+        },
+        false => match file.read! (path.join place index.file_name) {
+            () => if io.is_dir! place { "" } else { fail! ("no index at " + place) },
+            t => t,
+        },
     };
-    if in_git {
-        match fetch.run! "git status" "git" ["-C", root, "status", "--porcelain"] {
-            Result.ok(out) => {
-                let pending = list.filter (fn l -> not (str.is_empty (str.trim l)) && not (str.ends_with sign.file_name l))
-                                          (str.split "\n" out);
-                if not (list.is_empty pending) {
-                    console.error! ("note: signing the last commit; " + to_string (list.length pending)
-                                    + " uncommitted change(s) are not part of it")
-                }
+    let s = match index.verify text { Result.ok(s) => s, Result.error(why) => fail! (place + ": " + why) };
+    let memo = path.join (path.join (util.mind_home! ()) "index") (fetch.slug place);
+    match file.read! memo {
+        () => (),
+        seen => match str.words seen {
+            [n, h] => match num.parse_int n {
+                () => (),
+                count => match index.extends s count h {
+                    Result.error(why) => fail! ("the index at " + place + " is not the one this machine read before: " + why),
+                    _ => (),
+                },
             },
             _ => (),
-        }
+        },
     }
+    file.mkdir_all! (path.dirname memo)
+    file.write! memo (to_string (index.length s) + " " + index.head s + "\n")
+    s
+};
+
+/// `[name, requirement]` when what `mind add` was given is a name to look up
+/// rather than a place: no scheme, no separator, and no directory of that name
+/// here. `NAME@REQUIREMENT` asks for releases a requirement accepts.
+let index_query! source =
+    if manifest.is_remote source || manifest.is_tarball source || str.find "/" source >= 0 || io.is_dir! source { () }
+    else {
+        let [name, req] = match str.split_once "@" source { () => [source, "*"], parts => parts };
+        if index.valid_name name { [name, req] } else { () }
+    };
+
+/// The release of `name` the first index that has one offers:
+/// `[[release, source, hash, key], index]`.
+let find_in_indexes! m name req = {
+    let revoked = (build.trust_context! m).[:revoked else []];
+    let rec ask! places tried =
+        match places {
+            [] => fail! (if list.is_empty tried { "no index is configured: set $MIND_INDEXES or [fetch] indexes" }
+                         else { str.join_str "\n" (list.reverse tried) }),
+            [place, ..rest] => match index.lookup (read_index! place) name req revoked {
+                Result.ok(rel) => [rel, place],
+                Result.error(why) => ask! rest (list.cons (place + ": " + why) tried),
+            },
+        };
+    ask! (indexes! m) []
+};
+
+/// Add this package's last commit to an index, as `RELEASE` from `--source`.
+/// The index is a directory -- a checkout of wherever it is kept -- and the new
+/// line goes to its keepers the way any change does. It is checked as a reader
+/// will check it before it is written.
+///
+/// The commit must already carry this key's signature of the release in its
+/// `mind.sig`: the index entry is how a user first finds the package and its
+/// author's key, and the package's own signature is what every later fetch of
+/// it -- from a mirror, from the cache -- is held to. The two must agree.
+let cmd_publish! m c args = {
+    let [place, rest] = match args {
+        [p, ..r] => [p, r],
+        [] => fail! "publish needs the index: a directory holding index.log",
+    };
+    if fetch.is_url place { fail! "publish writes into a copy of the index on this machine; send its new line to whoever keeps it" }
+    let name = to_string (manifest.name m);
+    if not (index.valid_name name) { fail! ("`" + name + "` is not a name an index can hold: lowercase letters, digits, - and _") }
+    let release = release_of! m rest "publish";
+    let source = match [cli.get () c "source", manifest.repository m] {
+        [(), ()] => fail! "say where users fetch it from: --source URL, or [package] repository",
+        [(), r] => to_string r,
+        [s, _] => s,
+    };
+    let seed = signing_seed! c;
     let public = crypto.ed25519_public seed;
-    add_statement! root (sign.release seed release h)
-    console.print! ("signed " + h + " as release " + release + " by " + sign.spell public)
-    console.print! (if in_git { "commit " + sign.file_name + " -- it is not part of what it signs -- and tag it " + release }
-                    else { "pack this directory as it stands, " + sign.file_name + " with it" })
+    let [h, signed] = with_checkout! m "publishing" (fn dir -> {
+        let h = fetch.tree_hash! dir;
+        let statements = match file.read! (path.join dir sign.file_name) { () => [], t => sign.statements t };
+        let signed = list.any (fn st -> match st {
+            sign.Statement.release(k, n, sh, _) => k == public && n == release && sh == h,
+            _ => false,
+        }) statements;
+        strict! h
+        strict! signed
+        [h, signed]
+    });
+    if not signed {
+        fail! ("the last commit is not signed as " + release + " by " + sign.spell public
+               + ": run `mind sign " + release + "`, commit " + sign.file_name + ", tag " + release + ", then publish")
+    }
+    let log_path = path.join place index.file_name;
+    let before = match file.read! log_path { () => "", t => if str.is_empty t || str.ends_with "\n" t { t } else { t + "\n" } };
+    let s = match index.verify before { Result.ok(s) => s, Result.error(why) => fail! (log_path + ": " + why) };
+    let after = before + index.render (index.publish seed name source release h (index.head s)) + "\n";
+    match index.verify after { Result.error(why) => fail! why, _ => () }
+    file.mkdir_all! place
+    file.write! log_path after
+    console.print! ("published " + name + " " + release + " (" + h + ") from " + source + " to " + log_path)
+};
+
+/// Every package the indexes have whose name holds `text`, with its newest
+/// release.
+let cmd_search! m args = {
+    let text = match args { [t] => t, [] => "", _ => fail! "search takes one piece of text" };
+    let places = indexes! m;
+    if list.is_empty places { fail! "no index is configured: set $MIND_INDEXES or [fetch] indexes" }
+    strict! (list.map (fn place -> {
+        let found = index.search (read_index! place) text;
+        strict! (list.map (fn [n, r] -> console.print! (n + " " + r + "  (" + place + ")")) found)
+    }) places)
+};
+
+// --- attesting and reproducing builds ---------------------------------------------
+//
+// sign.dr says what an attestation is. A build attested or reproduced is made
+// from the last commit, as a fetch would see it, with every source path made
+// relative (`build.remap_args!`), so that the same source, compiler and
+// standard library make the same bytes on any machine, in any directory.
+
+/// Build the package in `dir` as reproducibly as it can be built, and answer
+/// the image's hash and where it is. The hash is forced here, while `dir`
+/// is still there.
+let build_reproducibly! dir o = {
+    let m = match manifest.load! dir { Result.ok(m) => m, Result.error(why) => fail! why };
+    let o2 = build.with_option :reproducible true o;
+    match build.compile! m o2 { Result.error(why) => fail! why, _ => () }
+    let out = build.output_of m o2;
+    let h = "sha256:" + crypto.hex (crypto.digest_file! :sha256 out);
+    strict! h
+    [h, out]
+};
+
+/// Build this package's last commit reproducibly and sign what went in and
+/// what came out. The image is left where `mind build` puts it: that file is
+/// the one the attestation names, and the one to publish.
+let cmd_attest! m o c args = {
+    let root = manifest.root m;
+    let seed = signing_seed! c;
+    let release = release_of! m args "attest";
+    let compiler = match build.compiler_digest! m o { Result.ok(d) => d, Result.error(why) => fail! why };
+    let std = build.std_digest! ();
+    let kept = build.output_of m o;
+    let [source, image] = with_checkout! m "attesting" (fn dir -> {
+        let source = fetch.tree_hash! dir;
+        strict! source
+        let [image, out] = build_reproducibly! dir o;
+        file.mkdir_all! (path.dirname kept)
+        file.copy! out kept
+        strict! image
+        [source, image]
+    });
+    let built = sign.Built.make source compiler std (build.profile_of o) image;
+    add_statement! root (sign.attest seed release built)
+    console.print! ("attested release " + release + " (" + build.profile_of o + "): " + image)
+    console.print! ("  from " + source + "\n  by compiler " + compiler + "\n  with std " + std)
+    console.print! ("  the image is " + kept + "; commit " + sign.file_name + " and publish both")
+};
+
+/// Rebuild what attestations describe and compare. For this project, its last
+/// commit against every attestation in its `mind.sig`; for a dependency, its
+/// fetched copy against the attestations of keys the project trusts for it.
+/// `--image FILE` also holds a downloaded image to the attested hash. An
+/// attestation made with another compiler or standard library cannot be
+/// reproduced here, and is said to be skipped, not failed; a rebuild that
+/// differs is a failure, and so is having nothing to reproduce at all.
+let cmd_reproduce! m o c args = {
+    let compiler = match build.compiler_digest! m o { Result.ok(d) => d, Result.error(why) => fail! why };
+    let std = build.std_digest! ();
+    let file_hash = match cli.get () c "image" {
+        () => (),
+        f => "sha256:" + crypto.hex (crypto.digest_file! :sha256 f),
+    };
+    let statements_in! dir = match file.read! (path.join dir sign.file_name) { () => [], t => sign.statements t };
+    let results = match args {
+        [] => with_checkout! m "reproducing" (fn dir -> {
+            let rs = reproduce_in! dir o (sign.builds (statements_in! (manifest.root m))) compiler std file_hash;
+            strict! (list.forced rs)
+            rs
+        }),
+        [key] => {
+            let g = graph_of! m o;
+            let n = match list.filter (fn n -> build.node_key n == key) (build.every_node g) {
+                [n, .._] => n,
+                [] => fail! ("no dependency is called " + key),
+            };
+            let trusted = list.cons (build.node_signer n) (build.node_roots n);
+            let [mine, others] = list.partition (fn [k, _, _] -> list.contains (sign.spell k) trusted)
+                                                (sign.builds (statements_in! (build.node_dir n)));
+            strict! (list.map (fn [k, name, _] -> console.print! ("  ignored " + name + " by " + sign.spell k
+                                                                   + ": not a key this project trusts for " + key))
+                              others)
+            // A copy, since a build writes into the directory it builds, and
+            // the cache is not to be written into.
+            let scratch = path.join (util.mind_home! ()) ("reproduce-" + file.scratch_suffix! ());
+            match fetch.run! "cp" "cp" ["-R", build.node_dir n, scratch] { Result.error(why) => fail! why, _ => () }
+            let rs = reproduce_in! scratch o mine compiler std file_hash;
+            strict! (list.forced rs)
+            file.remove_all! scratch
+            rs
+        },
+        _ => fail! "reproduce takes at most one dependency's name",
+    };
+    let count k = list.length (list.filter (fn r -> r == k) results);
+    console.print! (to_string (count :reproduced) + " reproduced, " + to_string (count :differs) + " differ, "
+                    + to_string (count :skipped) + " skipped")
+    if count :differs > 0 || count :reproduced == 0 { os.exit! 1 }
+};
+
+/// Each attestation against a rebuild in `dir`, one line apiece: `:reproduced`,
+/// `:differs` or `:skipped`. A profile is built once however many keys attest it.
+let reproduce_in! dir o attested compiler std file_hash = {
+    let source = fetch.tree_hash! dir;
+    let say! line = console.print! ("  " + line);
+    let rec go! rest built acc =
+        match rest {
+            [] => list.reverse acc,
+            [[k, name, b], ..more] => {
+                let who = name + " (" + sign.Built.profile b + ") by " + sign.spell k;
+                let p = sign.Built.profile b;
+                if sign.Built.source b != source {
+                    say! ("skipped " + who + ": it attests other source, " + sign.Built.source b)
+                    go! more built (list.cons :skipped acc)
+                } else if sign.Built.compiler b != compiler {
+                    say! ("skipped " + who + ": built by compiler " + sign.Built.compiler b + ", and this one is " + compiler)
+                    go! more built (list.cons :skipped acc)
+                } else if sign.Built.std b != std {
+                    say! ("skipped " + who + ": built with std " + sign.Built.std b + ", and this one is " + std)
+                    go! more built (list.cons :skipped acc)
+                } else {
+                    let image = match built.[p else ()] {
+                        () => list.head (build_reproducibly! dir (build.with_option :profile p o)),
+                        h => h,
+                    };
+                    strict! image
+                    let file_says = match file_hash {
+                        () => "",
+                        f => if f == sign.Built.image b { "; the image given is it" } else { "; the image given is NOT it (" + f + ")" },
+                    };
+                    let same = image == sign.Built.image b && (file_hash == () || file_hash == image);
+                    say! ((if same { "reproduced " } else { "DIFFERS    " }) + who + ": " + image
+                          + (if image == sign.Built.image b { "" } else { ", attested " + sign.Built.image b }) + file_says)
+                    go! more built.[p => image] (list.cons (if same { :reproduced } else { :differs }) acc)
+                }
+            },
+        };
+    match attested {
+        [] => { say! "nothing to reproduce: no attestation of this source by a key that counts here"; [] },
+        _ => go! attested (%{}) [],
+    }
 };
 
 /// Put a statement into this package's `mind.sig`. The file is read, and the
@@ -957,12 +1258,24 @@ let add_name! source dir c =
     };
 
 let cmd_add! m c args = {
-    let source = match args {
+    let given = match args {
         [s] => s,
-        [] => fail! "add needs a directory, a git URL or a tarball URL",
+        [] => fail! "add needs a directory, a git URL, a tarball URL, or a name in an index",
         _ => fail! "add takes one source; use --name to choose what it is imported as",
     };
-    let raw = add_spec! source c;
+    // A name is looked up: its source, its release, the hash its author
+    // published and the author's key, which the dependency is then held to --
+    // the index is how trust in a package is first had.
+    let found = match index_query! given { () => (), [name, req] => find_in_indexes! m name req };
+    let source = match found {
+        () => given,
+        [[rel, src, _, _], _] => if manifest.is_tarball src { src } else { src + "#" + rel },
+    };
+    let named = add_spec! source c;
+    let raw = match found {
+        () => named,
+        [[_, _, _, key], _] => named.["keys" => list.unique (list.append (sign.listed (named.["keys" else ()])) [key])],
+    };
     // A directory is typed relative to where you are and stored relative to
     // the manifest, which is where it will be read from.
     let spec = match raw.["path" else ()] {
@@ -978,7 +1291,17 @@ let cmd_add! m c args = {
                 Result.error(why) => fail! (source + " " + why),
                 _ => (),
             }
-            let key = add_name! source dir c;
+            match found {
+                () => (),
+                [[rel, _, h, _], place] => if fetch.hash! probe dir != h {
+                    fail! (source + " is not what " + place + " says " + rel + " is: it hashes to "
+                           + to_string (fetch.hash! probe dir) + ", and the index says " + h)
+                },
+            }
+            let key = match [found, cli.get () c "name"] {
+                [[_, _], ()] => list.head (index_query! given),
+                _ => add_name! source dir c,
+            };
             let manifest_file = path.join (manifest.root m) "mind.toml";
             let text = match file.read! manifest_file { () => "", t => t };
             file.write! manifest_file (manifest.with_dependency section key spec text)
@@ -1170,6 +1493,10 @@ let run_command! c theirs = {
                   "keygen" => cmd_keygen! c,
                   "sign" => cmd_sign! (project! ()) c (cli.rest c),
                   "rotate" => cmd_rotate! (project! ()) c (cli.rest c),
+                  "attest" => cmd_attest! (project! ()) o c (cli.rest c),
+                  "publish" => cmd_publish! (project! ()) c (cli.rest c),
+                  "search" => cmd_search! (project! ()) (cli.rest c),
+                  "reproduce" => cmd_reproduce! (project! ()) o c (cli.rest c),
                   "revoke" => cmd_revoke! (project! ()) c (cli.rest c),
                   "add"   => cmd_add! (project! ()) c (cli.rest c),
                   "remove" => cmd_remove! (project! ()) (cli.rest c),

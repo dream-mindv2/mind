@@ -251,6 +251,50 @@ check "an update that goes back a version is refused" down 1 "would go back to a
 check "unless it is allowed" down 0 "updated d" "update --allow-downgrade"
 check "and the lock follows" down 0 "d v1.0.0"
 
+# The index. An author publishes two releases to a directory; a user who
+# points at it finds the package by name, gets the newest release or the one
+# a requirement picks, and is held to the author's key and bytes. Someone else
+# cannot publish under the name, and a copy of the index that was rewritten or
+# rolled back is refused by a machine that saw the original.
+idx=$(cd "$tmp/keyapp" && "$dream" "$mind" keygen --signing-key "$tmp/idx.key" | tail -1 | tr -d ' ')
+# release TAG -- what an author does in $tmp/irepo: sign, commit, tag, publish.
+release() {
+    "$dream" "$mind" sign "$1" --signing-key "$tmp/idx.key" >/dev/null 2>&1 && git add mind.sig \
+        && git_c commit -qm "sign $1" && git tag "$1" \
+        && "$dream" "$mind" publish "$tmp/index" --source "file://$tmp/irepo" --signing-key "$tmp/idx.key" >/dev/null 2>&1
+}
+mkdir -p "$tmp/irepo" && (cd "$tmp/irepo" && git init -q -b main && printf '[package]\nname = "ipkg"\nversion = "1.0.0"\n' >mind.toml \
+    && echo 'let v = 1;' >lib.dr && git add . && git_c commit -qm one && release v1.0.0 \
+    && printf '[package]\nname = "ipkg"\nversion = "1.1.0"\n' >mind.toml && git_c commit -qam two && release v1.1.0)
+export MIND_INDEXES="$tmp/index"
+pkg find/app 0.1.0 ""
+check "the index is searched by name" find 0 "ipkg v1.1.0" "search ip"
+check "a name is added as its newest release" find 0 "added ipkg = file://$tmp/irepo#v1.1.0" "add ipkg"
+has "held to the author's key" "keys = \\[\"$idx\"\\]" "$tmp/find/app/mind.toml"
+check "a requirement picks among releases" find 0 "#v1.0.0" "add ipkg@<1.1 --name old"
+(cd "$tmp/irepo" && "$dream" "$mind" sign v2.0.0 --signing-key "$tmp/third.key" >/dev/null 2>&1 && git add mind.sig \
+    && git_c commit -qm squat && "$dream" "$mind" publish "$tmp/index" v2.0.0 --source "file://$tmp/irepo" --signing-key "$tmp/third.key" >"$tmp/squat" 2>&1)
+case "$(cat "$tmp/squat")" in *"belongs to"*) echo "ok   a name cannot be taken by another key"; pass=$((pass + 1)) ;;
+    *) echo "FAIL a name cannot be taken by another key: $(cat "$tmp/squat")"; fail=$((fail + 1)) ;; esac
+(cd "$tmp/irepo" && echo 'let w = 2;' >>lib.dr && printf '[package]\nname = "ipkg"\nversion = "1.2.0"\n' >mind.toml \
+    && git_c commit -qam three && release v1.2.0 \
+    && echo 'let planted = 1;' >>lib.dr && git_c commit -qam moved && git tag -f v1.2.0 >/dev/null)
+pkg moved2/app 0.1.0 ""
+check "a release that is not what the index says is refused" moved2 1 "but what arrived hashes to" "add ipkg"
+pkg unsigned/app 0.1.0 ""
+(cd "$tmp/irepo" && echo 'let u = 3;' >>lib.dr && printf '[package]\nname = "ipkg"\nversion = "1.3.0"\n' >mind.toml && git_c commit -qam four)
+out=$(cd "$tmp/irepo" && "$dream" "$mind" publish "$tmp/index" --source "file://$tmp/irepo" --signing-key "$tmp/idx.key" 2>&1)
+case "$out" in *"is not signed as v1.3.0"*) echo "ok   a release must be signed before it is published"; pass=$((pass + 1)) ;;
+    *) echo "FAIL a release must be signed before it is published: $out"; fail=$((fail + 1)) ;; esac
+cp "$tmp/index/index.log" "$tmp/index.good"
+sed -i '1s/v1.0.0/v1.0.9/' "$tmp/index/index.log"
+check "an index with a changed entry is refused" find 1 "its signature does not verify" "search ip"
+head -n 2 "$tmp/index.good" >"$tmp/index/index.log"
+check "an index rolled back is refused by a machine that saw more" find 1 "an old copy, or entries withheld" "search ip"
+cp "$tmp/index.good" "$tmp/index/index.log"
+check "and the real one is still read" find 0 "ipkg v1.2.0" "search ip"
+unset MIND_INDEXES
+
 echo
 echo "$pass graph cases passed, $fail failed"
 [ "$fail" -eq 0 ]

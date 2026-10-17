@@ -1,0 +1,294 @@
+// The index: names for packages, with nobody in charge of it.
+//
+// A dependency is a URL, which works and says nothing about where to find a
+// package called `json`. An index says that: a log, `index.log`, of which
+// release of which name is at which source and hashes to what, each line
+// signed by the package's author. It is a plain file, so it can be served from
+// any directory or web server, mirrored like a package, and kept in a git
+// repository that people send their entries to; `mind` needs nothing from
+// whoever runs it but the file.
+//
+// What makes it trustworthy without trusting its host:
+//
+// - **Every entry is signed by its author**, and a name belongs to the key
+//   that first published it. A later entry for the name must be signed by
+//   that key, or by the key it was handed to with a `rotate` entry the owner
+//   signed. Squatting a name means being first; taking one over means the
+//   owner's key.
+// - **It is a hash chain.** Each line carries the hash of the line before it,
+//   so the log can only be appended to: an entry cannot be changed, removed or
+//   reordered without every later line failing to verify.
+// - **Clients remember where it was.** A machine keeps the length and head of
+//   each index it has read (`$MIND_HOME/index`), and refuses a copy that no
+//   longer holds that head or is shorter -- a host serving history rewritten,
+//   or an old copy to hide a release, is caught by everyone who saw the
+//   original.
+//
+// An entry pins what the lock pins, the tree hash, so a package found by name
+// is held to the bytes its author published, wherever it is then fetched from.
+//
+// The lines:
+//
+//     publish NAME SOURCE RELEASE sha256:HASH ed25519:KEY PREV SIG
+//     rotate NAME ed25519:OLD ed25519:NEW PREV SIG
+//
+// This module is pure. Fetching the file and remembering heads are main.dr's.
+
+import std.crypto;
+import std.list;
+import std.str;
+import std.version;
+import std.map;
+
+import sign;
+
+let file_name = "index.log";
+
+/// The `PREV` of the first line.
+let genesis = "sha256:" + str.repeat 64 "0";
+
+/// What a line of the log is, keys and signature as bytes.
+union Entry {
+    publish(name : :string, source : :string, release : :string, hash : :string, key : :string,
+            prev : :string, signature : :string),
+    rotate(name : :string, old : :string, new : :string, prev : :string, signature : :string),
+}
+
+/// The hash a line is chained by: the next line's `PREV`.
+let line_hash : :string -> :string;
+let line_hash text = "sha256:" + crypto.hex (crypto.sha256 text);
+
+let publish_message name source release h prev =
+    "mind-index-v1\npublish " + name + "\nsource " + source + "\nrelease " + release + "\nhash " + h
+    + "\nprev " + prev + "\n";
+
+let rotate_message name old new prev =
+    "mind-index-v1\nrotate " + name + "\nfrom " + sign.spell old + "\nto " + sign.spell new + "\nprev " + prev + "\n";
+
+/// A name as an index spells one: what can be imported, and nothing that
+/// could be mistaken for a path or a URL.
+let valid_name : :string -> :bool;
+let valid_name n = {
+    let ok c = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-';
+    not (str.is_empty n) && str.all ok n && (list.head (str.chars n) >= 'a' && list.head (str.chars n) <= 'z')
+};
+
+/// The entries an author makes.
+let publish : :string -> :string -> :string -> :string -> :string -> :string -> Entry;
+let publish seed name source release h prev =
+    Entry.publish name source release h (crypto.ed25519_public seed) prev
+                  (crypto.ed25519_sign seed (publish_message name source release h prev));
+
+let rotate : :string -> :string -> :string -> :string -> Entry;
+let rotate seed name new prev = {
+    let old = crypto.ed25519_public seed;
+    Entry.rotate name old new prev (crypto.ed25519_sign seed (rotate_message name old new prev))
+};
+
+let render : Entry -> :string;
+let render e = match e {
+    Entry.publish(n, src, r, h, k, prev, sig) =>
+        str.join_str " " ["publish", n, src, r, h, sign.spell k, prev, crypto.hex sig],
+    Entry.rotate(n, old, new, prev, sig) =>
+        str.join_str " " ["rotate", n, sign.spell old, sign.spell new, prev, crypto.hex sig],
+};
+
+let parse_line : :string -> Option Entry;
+let parse_line line =
+    match str.words line {
+        ["publish", n, src, r, h, k, prev, s] => match [sign.key_bytes k, crypto.unhex s] {
+            [(), _] => Option.none,
+            [_, ()] => Option.none,
+            [kb, sb] => Option.some (Entry.publish n src r h kb prev sb),
+        },
+        ["rotate", n, old, new, prev, s] => match [sign.key_bytes old, sign.key_bytes new, crypto.unhex s] {
+            [(), _, _] => Option.none,
+            [_, (), _] => Option.none,
+            [_, _, ()] => Option.none,
+            [ob, nb, sb] => Option.some (Entry.rotate n ob nb prev sb),
+        },
+        _ => Option.none,
+    };
+
+/// A name's owner and its releases, oldest first, as `[release, source,
+/// hash, key]`.
+mapping Name {
+    owner : :string
+    releases = []
+}
+
+/// What a verified log says: every name, and the head after each line (the
+/// last first), which is how a remembered head is found again.
+mapping State {
+    names = %{}
+    heads = []
+}
+
+/// The head of the whole log.
+let head : State -> :string;
+let head s = match State.heads s { [h, .._] => h, [] => genesis };
+
+let length : State -> :integer;
+let length s = list.length (State.heads s);
+
+/// The head after the first `n` lines.
+let head_at : State -> :integer -> :string;
+let head_at s n = if n == 0 { genesis } else { list.nth (length s - n) (State.heads s) };
+
+/// The log checked, line by line, or the first line that breaks it and why.
+let verify : :string -> Result State :string;
+let verify text = {
+    let lines = list.filter (fn l -> not (str.is_empty (str.trim l))) (str.split "\n" text);
+    let step acc [i, line] = match acc {
+        Result.error(_) => acc,
+        Result.ok(s) => {
+            let at = "line " + to_string (i + 1) + ": ";
+            let names = State.names s;
+            let chained s2 = Result.ok (State.set_heads (list.cons (line_hash line) (State.heads s2)) s2);
+            match parse_line line {
+                Option.none => Result.error (at + "is not an entry"),
+                Option.some(Entry.publish(n, src, r, h, k, prev, sig)) =>
+                    if prev != head s { Result.error (at + "does not follow the line before it") }
+                    else if not (valid_name n) { Result.error (at + "`" + n + "` is not a name") }
+                    else if not (crypto.ed25519_verify k (publish_message n src r h prev) sig) {
+                        Result.error (at + "its signature does not verify")
+                    } else {
+                        match names.[n else ()] {
+                            () => chained (State.set_names names.[n => Name.make (sign.spell k) [[r, src, h, sign.spell k]]] s),
+                            owned => if Name.owner owned != sign.spell k {
+                                Result.error (at + n + " belongs to " + Name.owner owned + ", not " + sign.spell k)
+                            } else if list.any (fn rel -> list.head rel == r) (Name.releases owned) {
+                                Result.error (at + n + " " + r + " was already published")
+                            } else {
+                                chained (State.set_names names.[n => Name.set_releases (list.append (Name.releases owned)
+                                                                                                    [[r, src, h, sign.spell k]])
+                                                                                       owned] s)
+                            },
+                        }
+                    },
+                Option.some(Entry.rotate(n, old, new, prev, sig)) =>
+                    if prev != head s { Result.error (at + "does not follow the line before it") }
+                    else if not (crypto.ed25519_verify old (rotate_message n old new prev) sig) {
+                        Result.error (at + "its signature does not verify")
+                    } else {
+                        match names.[n else ()] {
+                            () => Result.error (at + "rotates " + n + ", which nobody has published"),
+                            owned => if Name.owner owned != sign.spell old {
+                                Result.error (at + n + " belongs to " + Name.owner owned + ", not " + sign.spell old)
+                            } else { chained (State.set_names names.[n => Name.set_owner (sign.spell new) owned] s) },
+                        }
+                    },
+            }
+        },
+    };
+    list.fold step (Result.ok (State.new ())) (list.enumerate lines)
+};
+
+/// Whether a log read now is the one a machine saw before, grown: it must
+/// hold the head remembered at the length remembered.
+let extends : State -> :integer -> :string -> Result :unit :string;
+let extends s seen_length seen_head =
+    if length s < seen_length {
+        Result.error ("it has " + to_string (length s) + " entries, and this machine has seen " + to_string seen_length
+                      + " -- an old copy, or entries withheld")
+    } else if head_at s seen_length != seen_head {
+        Result.error ("its history differs from what this machine saw at entry " + to_string seen_length
+                      + " -- it has been rewritten")
+    } else { Result.ok () };
+
+/// The release of `name` to use: the newest whose version `requirement`
+/// accepts (`*` for any), skipping releases by a revoked key. A release name
+/// that is no version can only be asked for exactly. `[release, source, hash,
+/// key]`, or why there is none.
+let lookup : State -> :string -> :string -> [:string] -> Result [:string] :string;
+let lookup s name requirement revoked =
+    match (State.names s).[name else ()] {
+        () => Result.error ("no package is called " + name + " in the index"),
+        owned => {
+            let usable = list.filter (fn rel -> not (list.contains (list.nth 3 rel) revoked)) (Name.releases owned);
+            let exact = list.filter (fn rel -> list.head rel == requirement) usable;
+            match [exact, version.parse_requirement requirement] {
+                [[rel, .._], _] => Result.ok rel,
+                [_, Result.error(why)] => Result.error (why),
+                [_, Result.ok(req)] => {
+                    let versioned = list.flat_map (fn rel -> match version.parse_or_unit (list.head rel) {
+                        () => [],
+                        v => [[v, rel]],
+                    }) usable;
+                    match version.newest_matching req (list.map list.head versioned) {
+                        () => Result.error ("no release of " + name + " meets " + requirement + " (it has "
+                                            + str.join_str ", " (list.map list.head usable) + ")"),
+                        best => Result.ok (list.nth 1 (list.head (list.filter (fn pair -> list.head pair == best) versioned))),
+                    }
+                },
+            }
+        },
+    };
+
+/// The names matching some text, each with its newest release.
+let search : State -> :string -> [[:string]];
+let search s text =
+    list.flat_map (fn [n, owned] -> if str.find text n >= 0 {
+        match Name.releases owned { [] => [], rels => [[n, list.head (list.last rels)]] }
+    } else { [] }) (list.sort_on list.head (map.pairs (State.names s)));
+
+when test {
+    import std.test;
+
+    let alice = crypto.unhex "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb";
+    let bob = crypto.unhex "c5aa8df43f9f837bedb7442f31dcb7b166d38535076f094b85ce3a2e0b4458f7";
+    let h = "sha256:" + str.repeat 64 "a";
+    // A log built a line at a time, each chained to the one before.
+    let log makers = list.fold (fn text make -> {
+        let prev = match verify text { Result.ok(s) => head s, _ => genesis };
+        text + render (make prev) + "\n"
+    }) "" makers;
+    let error_of r = match r { Result.error(why) => why, Result.ok(_) => "ok" };
+    let says text r = str.find text (error_of r) >= 0;
+    let release_of r = match r { Result.ok(rel) => list.head rel, Result.error(why) => why };
+    let good = log [fn p -> publish alice "json" "https://x/json" "v1.0.0" h p,
+                    fn p -> publish alice "json" "https://x/json" "v1.2.0" h p,
+                    fn p -> publish alice "json" "https://x/json" "v2.0.0" h p];
+    let state = match verify good { Result.ok(s) => s, _ => State.new () };
+
+    let tests = [
+        test.case "a log of signed entries verifies"
+            $( test.eq! 3 (length state) ),
+        test.case "the newest release a requirement accepts is chosen"
+            $( test.eq! ["v2.0.0", "v1.2.0", "v1.0.0"]
+                        [release_of (lookup state "json" "*" []), release_of (lookup state "json" "^1" []),
+                         release_of (lookup state "json" "v1.0.0" [])] ),
+        test.case "a name belongs to whoever published it first"
+            $( test.true! (says "belongs to" (verify (log [fn p -> publish alice "json" "s" "v1" h p,
+                                                            fn p -> publish bob "json" "s" "v2" h p]))) ),
+        test.case "and can be handed on by its owner"
+            $( test.eq! 3 (match verify (log [fn p -> publish alice "json" "s" "v1" h p,
+                                              fn p -> rotate alice "json" (crypto.ed25519_public bob) p,
+                                              fn p -> publish bob "json" "s" "v2" h p]) {
+                   Result.ok(s) => length s, _ => 0 }) ),
+        test.case "but not by anyone else"
+            $( test.true! (says "belongs to" (verify (log [fn p -> publish alice "json" "s" "v1" h p,
+                                                            fn p -> rotate bob "json" (crypto.ed25519_public bob) p]))) ),
+        test.case "a release cannot be published twice"
+            $( test.true! (says "already published" (verify (log [fn p -> publish alice "json" "s" "v1" h p,
+                                                                  fn p -> publish alice "json" "t" "v1" h p]))) ),
+        test.case "a changed line breaks the chain after it"
+            $( test.true! (says "line 2: does not follow" (verify (str.replace "v1.0.0" "v1.0.1" good))
+                           || says "line 1: its signature" (verify (str.replace "v1.0.0" "v1.0.1" good))) ),
+        test.case "a removed line breaks the chain"
+            $( test.true! (says "does not follow"
+                                (verify (str.join_str "\n" (list.drop 1 (str.split "\n" good))))) ),
+        test.case "a log that grew extends the one seen"
+            $( test.eq! (Result.ok ()) (extends state 2 (head_at state 2)) ),
+        test.case "a shorter one, or another history, does not"
+            $( test.eq! [true, true] [says "withheld" (extends state 4 (head state)),
+                                      says "rewritten" (extends state 2 genesis)] ),
+        test.case "a revoked key's releases are not used"
+            $( test.true! (says "no release of json" (lookup state "json" "*" [sign.spell (crypto.ed25519_public alice)])) ),
+        test.case "names are searched"
+            $( test.eq! [["json", "v2.0.0"]] (search state "js") ),
+        test.case "a name is what an import can spell"
+            $( test.eq! [true, true, false, false, false]
+                        (list.map valid_name ["json", "http-2", "Json", "../x", "2fa"]) ),
+    ];
+}

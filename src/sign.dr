@@ -26,6 +26,16 @@
 //     release ed25519:KEY v1.4 sha256:HASH SIG    KEY made these bytes as v1.4
 //     rotate ed25519:OLD ed25519:NEW SIG          OLD hands over to NEW
 //     revoke ed25519:KEY SIG                      KEY is not to be trusted again
+//     build ed25519:KEY v1.4 SOURCE COMPILER STD PROFILE IMAGE SIG
+//                                                 built from SOURCE by COMPILER
+//                                                 with STD as PROFILE, it is IMAGE
+//
+// The last is a build attestation (`mind attest`): every part of it is a
+// hash, so anyone holding the same source, compiler and standard library can
+// rebuild and compare (`mind reproduce`), which is what says a published image
+// came from the published source and nothing else. Builds are byte for byte
+// reproducible once the paths they record are made relative
+// (`--remap-path-prefix`), so a mismatch is a finding, not noise.
 //
 // **Who is trusted** (`decide`) starts from the keys the manifest names and
 // the key the lock last saw sign the package, follows each through any
@@ -84,6 +94,16 @@ union Statement {
     release(key : :string, name : :string, hash : :string, signature : :string),
     rotate(old : :string, new : :string, signature : :string),
     revoke(key : :string, signature : :string),
+    build(key : :string, name : :string, built : Built, signature : :string),
+}
+
+/// What a build attestation says: the hashes of what went in and what came out.
+mapping Built {
+    source : :string
+    compiler : :string
+    std : :string
+    profile : :string
+    image : :string
 }
 
 let release_message : :string -> :string -> :string;
@@ -91,6 +111,11 @@ let release_message name h = "mind-release-v2\nrelease " + name + "\nhash " + h 
 
 let rotate_message : :string -> :string -> :string;
 let rotate_message old new = "mind-rotate-v1\nfrom " + spell old + "\nto " + spell new + "\n";
+
+let build_message : :string -> Built -> :string;
+let build_message name b =
+    "mind-build-v1\nrelease " + name + "\nsource " + Built.source b + "\ncompiler " + Built.compiler b
+    + "\nstd " + Built.std b + "\nprofile " + Built.profile b + "\nimage " + Built.image b + "\n";
 
 let revoke_message : :string -> :string;
 let revoke_message key = "mind-revoke-v1\nkey " + spell key + "\n";
@@ -108,6 +133,12 @@ let rotate old_seed new_key = {
     Statement.rotate old new_key (crypto.ed25519_sign old_seed (rotate_message old new_key))
 };
 
+let attest : :string -> :string -> Built -> Statement;
+let attest seed name b = {
+    let key = crypto.ed25519_public seed;
+    Statement.build key name b (crypto.ed25519_sign seed (build_message name b))
+};
+
 let revoke : :string -> Statement;
 let revoke seed = {
     let key = crypto.ed25519_public seed;
@@ -120,6 +151,7 @@ let valid s = match s {
     Statement.release(k, n, h, sig) => crypto.ed25519_verify k (release_message n h) sig,
     Statement.rotate(old, new, sig) => crypto.ed25519_verify old (rotate_message old new) sig,
     Statement.revoke(k, sig) => crypto.ed25519_verify k (revoke_message k) sig,
+    Statement.build(k, n, b, sig) => crypto.ed25519_verify k (build_message n b) sig,
 };
 
 let render : Statement -> :string;
@@ -127,6 +159,8 @@ let render s = match s {
     Statement.release(k, n, h, sig) => "release " + spell k + " " + n + " " + h + " " + crypto.hex sig,
     Statement.rotate(old, new, sig) => "rotate " + spell old + " " + spell new + " " + crypto.hex sig,
     Statement.revoke(k, sig) => "revoke " + spell k + " " + crypto.hex sig,
+    Statement.build(k, n, b, sig) => str.join_str " " ["build", spell k, n, Built.source b, Built.compiler b,
+                                                       Built.std b, Built.profile b, Built.image b, crypto.hex sig],
 };
 
 /// One line read, or none for a comment, a blank, or a line of the wrong
@@ -151,6 +185,11 @@ let parse_line line =
             [_, ()] => Option.none,
             [kb, sb] => Option.some (Statement.revoke kb sb),
         },
+        ["build", k, n, source, compiler, std, profile, image, s] => match [key_bytes k, crypto.unhex s] {
+            [(), _] => Option.none,
+            [_, ()] => Option.none,
+            [kb, sb] => Option.some (Statement.build kb n (Built.make source compiler std profile image) sb),
+        },
         _ => Option.none,
     };
 
@@ -168,7 +207,12 @@ let slot s = match s {
     Statement.release(k, _, _, _) => [:release, k],
     Statement.rotate(old, _, _) => [:rotate, old],
     Statement.revoke(k, _) => [:revoke, k],
+    Statement.build(k, _, b, _) => [:build, k, Built.profile b],
 };
+
+/// The build attestations among some statements, as `[key, release, built]`.
+let builds : [Statement] -> [[:any]];
+let builds ss = list.flat_map (fn s -> match s { Statement.build(k, n, b, _) => [[k, n, b]], _ => [] }) ss;
 
 /// A signature file with `s` in it, replacing what filled its slot and keeping
 /// everything else, comments included: signing v1.5 drops this key's v1.4
@@ -334,6 +378,13 @@ when test {
         test.case "signing again replaces that key's line and keeps the others"
             $( test.eq! 4 (list.length (str.split "\n" (str.trim (file [release seed "v1" h, release other "v1" h,
                                                                         rotate seed pub3, release seed "v2" h])))) ),
+        test.case "a build attestation reads back, verifies, and replaces only its own profile's"
+            $( {
+                   let built p = Built.make h "sha256:c" "sha256:s" p "sha256:i";
+                   let text = file [attest seed "v1" (built "debug"), attest seed "v1" (built "release"),
+                                    attest seed "v2" (built "release")];
+                   test.eq! [[pub, "v1", built "debug"], [pub, "v2", built "release"]] (builds (statements text))
+               } ),
         test.case "a line of the wrong shape does not hide the next"
             $( test.eq! pub (signer_of (decide (trusting [pub]) h ("junk line\n" + signed))) ),
     ];

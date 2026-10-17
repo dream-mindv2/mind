@@ -125,6 +125,10 @@ Given twice, the second is relative to the first.
 | `mind sign [RELEASE]` | sign this package's last commit as `RELEASE` into `mind.sig` |
 | `mind rotate ed25519:NEW` | hand this key's trust to another |
 | `mind revoke [CERT]` | publish this key's revocation in `mind.sig` |
+| `mind attest [RELEASE]` | build the last commit reproducibly and sign what went in and came out |
+| `mind reproduce [DEP]` | rebuild what the attestations describe and compare; `--image FILE` checks a download |
+| `mind publish INDEX [RELEASE]` | add this package's signed release to the index in directory `INDEX` |
+| `mind search [TEXT]` | the packages the indexes have whose names hold `TEXT` |
 | `mind deps`, `mind tree` | every package the project resolves to, as a list or as who needs what |
 | `mind info` | what this build would run, without running it |
 | `mind options` | every package's options, and what this build sets them to |
@@ -317,6 +321,75 @@ repository and the project names the same keys; pointing it elsewhere or
 naming other keys is choosing to trust anew. The keys you trust are worth
 having two of -- one kept offline -- so that a revoked key leaves a trusted
 one standing.
+
+### Reproducible builds
+
+A signature says who made the source. An attestation says what that source
+builds to, so that a published image -- an installed tool, a release
+download -- can be checked against the source it claims to come from:
+
+```
+mind attest --release          # build the last commit, sign source -> image
+mind reproduce --release       # anyone: rebuild it and compare the bytes
+mind reproduce --release --image app.dream    # and check a download is it
+mind reproduce json --release  # a dependency, against its author's attestation
+```
+
+`mind attest` builds a clean clone of the last commit, as `sign` hashes one,
+and writes a `build` statement into `mind.sig`: the source's tree hash, the
+compiler's (`dreams --version` names its image's digest), the standard
+library's, the profile, and the image's. It leaves the image where `mind
+build` would, which is the file to publish. `mind reproduce` rebuilds every
+attestation it can and says which match. One made with another compiler or
+standard library cannot be repeated here and is reported as skipped, not as
+a failure; a rebuild that differs, or nothing reproduced at all, exits 1.
+For a dependency only attestations by keys the project trusts for it count.
+
+The builds are byte for byte the same anywhere because the compiler is told
+to record source paths relative to their package (`--remap-path-prefix`):
+`std/src/list.dr` and `app/src/main.dr` rather than wherever they were on the
+machine that built them. The compiler, the standard library and the profile
+are all that is left to agree on, and the attestation names each.
+
+### The index
+
+Packages need no registry, but finding one by name needs somewhere names are
+written down. An index is that: a file, `index.log`, served from any
+directory or URL, kept wherever its keepers like -- a git repository that
+takes entries as pull requests is the obvious place -- and mirrored freely,
+because nothing in it has to be taken on trust.
+
+```
+mind sign v1.4 && git add mind.sig && git commit -m v1.4 && git tag v1.4
+mind publish ../index          # add the signed release to a checkout of the index
+```
+
+```toml
+[fetch]
+indexes = ["https://example.com/dream-index"]   # or $MIND_INDEXES
+```
+
+```
+mind search json
+mind add json                  # the newest release, held to its author's key
+mind add json@^1.2             # the newest a requirement accepts
+```
+
+Each line names a package, its source, its release and that release's tree
+hash, signed by the author. Why it can be trusted with nobody in charge:
+
+- **A name belongs to the key that first published it.** Later releases must
+  be signed by that key, or by one it handed the name to (a `rotate` line).
+  Nobody can publish under a name that is not theirs.
+- **It is a hash chain**: each line holds the hash of the one before, so
+  entries can be added and never changed, removed or reordered unnoticed.
+- **Every machine remembers the last head it read** (`$MIND_HOME/index`) and
+  refuses a copy that no longer has it, or has fewer entries -- an index
+  rewritten, or an old one served to hide a release.
+- **What is added is held to the index.** `mind add NAME` writes the author's
+  key into the entry, refuses bytes other than the ones the index names, and
+  the lock pins them from then on. `mind publish` requires the release to be
+  signed in the package itself, so the two always agree.
 
 ### Cycles
 

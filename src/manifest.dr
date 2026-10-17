@@ -145,6 +145,19 @@ let mirrors m =
             v => match type_of v { :list => v, _ => [v] },
         });
 
+/// The indexes to look names up in: `[fetch] indexes`, each a directory
+/// (relative to the manifest) or a URL holding `index.log` (index.dr).
+let indexes m =
+    list.map (fn place -> if str.find "://" place >= 0 { place } else { path.join (root m) place })
+        (match toml.get () (doc m) "fetch" "indexes" {
+            () => [],
+            v => match type_of v { :list => v, _ => [v] },
+        });
+
+/// Where the package is published from, for `mind publish`: `[package]
+/// repository`, or `()`.
+let repository m = toml.get () (doc m) "package" "repository";
+
 /// Keys trusted for dependencies wherever they are in the graph, by the key
 /// they are imported as: `[trust] json = ["ed25519:.."]`. This is how a
 /// project vouches for the dependencies of its dependencies, whose entries it
