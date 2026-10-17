@@ -2,7 +2,7 @@
 //
 // A script is optional, and a package without one is built exactly as it was
 // before scripts existed: nothing here is compiled, run or written for it.
-// For a package that has one, docs/build.md is the design and std.build the
+// For a package that has one, mind/std/docs/build.md is the design and std.build the
 // vocabulary; this is the part that belongs to `mind`:
 //
 // 1. **Skip if nothing moved.** `target/build/<key>/record` keeps the digest

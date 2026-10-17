@@ -268,7 +268,7 @@ script = "tools/build.dr"        # when it is not build.dr
 codegen = "../codegen"
 ```
 
-[docs/build.md](https://github.com/Custards1/dream/blob/main/docs/build.md) is the whole design.
+[mind/std/docs/build.md](https://github.com/dream-mindv2/std/blob/main/docs/build.md) is the whole design.
 
 ### Goals
 
