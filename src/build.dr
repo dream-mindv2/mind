@@ -104,8 +104,10 @@ let with_build_graph key sub g = g.[:builds => (g.[:builds else (%{})]).[key => 
 
 /// An empty graph that reads options as `g` does: a build script's packages
 /// are a program of their own, but one package has one set of options per
-/// build, whichever program it is compiled into.
-let inherit g = empty_graph.[:assumed => g.[:assumed else (%{})]].[:settings => g.[:settings else (%{})]];
+/// build, whichever program it is compiled into. What the lock pins, and the
+/// mirrors to ask, are the build's too.
+let inherit g = empty_graph.[:assumed => g.[:assumed else (%{})]].[:settings => g.[:settings else (%{})]]
+                    .[:pinned => g.[:pinned else (%{})]].[:mirrors => g.[:mirrors else []]];
 
 /// A node: the key, where it is, its manifest (`()` for a bare directory),
 /// the dependency as written, who asked for it first, and every version
@@ -229,7 +231,8 @@ let rec walk! owner owner_key deps kind path g =
 /// on with the rest.
 let follow! owner owner_key d rest kind trail g = {
     let key = manifest.dep_name d;
-    match fetch.resolve! (manifest.root owner) d {
+    let pinned = (g.[:pinned else (%{})]).[manifest.dep_source d else ()];
+    match fetch.resolve! (manifest.root owner) d pinned (g.[:mirrors else []]) {
         Result.error(why) => Result.error (why + " (required by " + asker owner_key + ")"),
         Result.ok(dir) => {
             let abs = path.absolute! dir;
@@ -444,7 +447,8 @@ let walk_graph! m o assumed = {
     let root_abs = path.absolute! (manifest.root m);
     let name = match manifest.name m { "" => "this project", n => n };
     let path = [step_of root_abs name (shown! (manifest.path m)) :uses];
-    let start = empty_graph.[:assumed => assumed].[:settings => settings! m o];
+    let start = empty_graph.[:assumed => assumed].[:settings => settings! m o]
+                    .[:pinned => option o :pinned (%{})].[:mirrors => option o :mirrors []];
     let walked = fold (fn acc wk -> match acc {
         Result.error(why) => acc,
         Result.ok(g) => walk! m root_key (list.head wk) (list.nth 1 wk) path g,
@@ -679,7 +683,8 @@ let script_section parent owner name =
 let rec lock_entries! g section name =
     list.concat [
         map (fn n -> lock.entry section (node_key n) (manifest.dep_source (node_dep n))
-                                     (fetch.commit! (node_dep n) (node_dir n)) (node_version n))
+                                     (fetch.commit! (node_dep n) (node_dir n)) (node_version n)
+                                     (fetch.hash! (node_dep n) (node_dir n)))
                  (nodes g),
         list.concat (map (fn pair -> {
             let [owner, sub] = pair;
@@ -688,29 +693,49 @@ let rec lock_entries! g section name =
     ];
 
 /// What to say about packages that moved under the lock.
+/// The commit is named when it moved, since that is what someone can go and
+/// look up; contents that changed under the same commit -- a replaced tarball,
+/// an edited cache -- are only the hash.
 let drift_message old moved =
-    "these dependencies resolved to a different commit than mind.lock records:\n"
+    "these dependencies resolved to something other than what mind.lock records:\n"
     + str.join_str "\n" (map (fn e -> {
           let o = lock.locked old e;
-          "  " + lock.key_of e + " (" + lock.source_of e + ") is now " + short (lock.commit_of e)
-          + ", but the lock says " + short (lock.commit_of o)
+          let [what, now, then] = match lock.commit_of e != lock.commit_of o
+                                        && lock.commit_of e != () && lock.commit_of o != () {
+              true => ["commit", lock.commit_of e, lock.commit_of o],
+              false => ["contents", lock.hash_of e, lock.hash_of o],
+          };
+          "  " + lock.key_of e + " (" + lock.source_of e + ") has " + what + " " + short now
+          + ", but the lock says " + short then
           + (if lock.section_of e == "program" { "" } else { "  [" + lock.section_of e + "]" })
       }) moved)
-    + "\na tag was moved, or the cache was changed by hand. `mind update` accepts what is there now";
+    + "\na tag was moved, the source changed what it serves, or the cache was edited by hand.\n"
+    + "If that was meant, `mind update` accepts what is there now";
 
-let short c = if str.byte_length c > 10 { str.slice 0 10 c } else { c };
+/// Enough of a commit or a hash to tell two apart.
+let short c = {
+    let bare = str.trim_prefix fetch.prefix c;
+    let cut = if str.byte_length bare > 10 { str.slice 0 10 bare } else { bare };
+    if bare == c { cut } else { fetch.prefix + cut }
+};
 
 /// The graph, checked against the lock and the lock brought up to date:
 /// what every command resolves through. `accept` is `mind update`'s: the
 /// commits have moved because it moved them, and the lock follows.
-let resolve! m o accept =
-    match graph! m o {
+///
+/// The lock is read before the walk, so a fetch knows what bytes it is after
+/// and can take them from a mirror. `mind update` does not hand it on: the
+/// source is what it means to ask.
+let resolve! m o accept = {
+    let root = manifest.root m;
+    let before = lock.load! root;
+    let pinned = if accept { %{} } else { lock.pinned before };
+    let walk_with = o.[:pinned => pinned].[:mirrors => fetch.mirrors! (manifest.mirrors m)];
+    match graph! m walk_with {
         Result.error(why) => Result.error why,
         Result.ok(g) => {
             let name = match manifest.name m { "" => "root", n => n };
             let now = lock_entries! g "program" name;
-            let root = manifest.root m;
-            let before = lock.load! root;
             match [accept, lock.drift before now] {
                 [false, [e, ..more]] => Result.error (drift_message before (list.cons e more)),
                 _ => {
@@ -723,7 +748,8 @@ let resolve! m o accept =
                 },
             }
         },
-    };
+    }
+};
 
 /// How the compiler is told about one package. `-L DIR` when the package
 /// already calls itself by the key, which every compiler understands;

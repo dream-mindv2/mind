@@ -1,7 +1,7 @@
 #!/bin/sh
 # The dependency graph, against packages on disk: cycles, diamonds, version
 # requirements, build dependencies in their own namespace, two revisions of
-# one repository, and the lock. Each case is a directory of manifests, one
+# one repository, the lock, and the hashes and mirrors it pins. Each case is a directory of manifests, one
 # `mind deps`, and the first line of what it said.
 set -u
 
@@ -96,9 +96,49 @@ check "a resolved graph is locked" lock 0 "json v1.0.0"
 (cd "$tmp/repo" && echo 'let z = 3;' >>lib.dr && git -c user.email=t@t -c user.name=t commit -qam three \
     && git tag -f v1.0 >/dev/null)
 rm -rf "$tmp/home/cache"
-check "a moved tag disagrees with the lock" lock 1 "resolved to a different commit than mind.lock"
+check "a moved tag disagrees with the lock" lock 1 "has commit "
 check "update accepts it" lock 0 "updated json" update
 check "and the lock agrees again" lock 0 "json v1.0.0"
+
+# The bytes, not the URL. The lock holds what the fetched copy hashes to;
+# `verify` holds the cache to it; a mirror serves the locked bytes when the
+# source is gone, and is refused when it serves anything else.
+has() {
+    if grep -q "$2" "$3"; then echo "ok   $1"; pass=$((pass + 1))
+    else echo "FAIL $1: no \"$2\" in $3"; sed 's/^/    /' "$3"; fail=$((fail + 1)); fi
+}
+has "the lock records what the bytes hash to" 'hash = "sha256:' "$tmp/lock/app/mind.lock"
+check "verify agrees with an untouched cache" lock 0 "verified 1 fetched packages" verify
+echo 'let planted = 1;' >>"$(ls -d "$tmp"/home/cache/*repo*)/lib.dr"
+check "a build trusts the hash it kept" lock 0 "json v1.0.0"
+check "verify does not" lock 1 "are not what was fetched" verify
+check "update fetches it again" lock 0 "updated json" update
+check "and verify agrees" lock 0 "verified 1" verify
+check "a mirror is written" lock 0 "wrote 1 packages" "mirror $tmp/mirror"
+check "and not twice" lock 0 "(1 already there)" "mirror $tmp/mirror"
+mv "$tmp/repo" "$tmp/repo.gone"
+rm -rf "$tmp/home/cache"
+check "a source that is gone, with no mirror, is an error" lock 1 "none is configured"
+export MIND_MIRRORS="$tmp/mirror"
+check "a mirror serves the locked bytes" lock 0 "json v1.0.0"
+check "and they verify" lock 0 "verified 1" verify
+has "the commit survives the trip" 'commit = "' "$tmp/lock/app/mind.lock"
+archive=$(ls "$tmp"/mirror/*.tar.gz)
+mkdir -p "$tmp/evil" && echo 'let evil = 1;' >"$tmp/evil/lib.dr" && tar -czf "$archive" -C "$tmp/evil" .
+rm -rf "$tmp/home/cache"
+check "a mirror that serves anything else is refused" lock 1 "served different contents"
+unset MIND_MIRRORS
+mv "$tmp/repo.gone" "$tmp/repo"
+
+# A tarball replaced behind the same URL has no commit to move: only its
+# hash says it changed.
+mkdir -p "$tmp/tgz/pkg" && printf '[package]\nname = "tz"\nversion = "1.0.0"\n' >"$tmp/tgz/pkg/mind.toml"
+echo 'let v = 1;' >"$tmp/tgz/pkg/lib.dr" && tar -czf "$tmp/tz.tar.gz" -C "$tmp/tgz" pkg
+pkg tgz/app 0.1.0 "[dependencies]\ntz = \"file://$tmp/tz.tar.gz\"\n"
+check "a tarball is locked by its bytes" tgz 0 "tz v1.0.0"
+echo 'let v = 2;' >"$tmp/tgz/pkg/lib.dr" && tar -czf "$tmp/tz.tar.gz" -C "$tmp/tgz" pkg
+rm -rf "$tmp/home/cache"
+check "a replaced tarball disagrees with the lock" tgz 1 "has contents sha256:"
 
 echo
 echo "$pass graph cases passed, $fail failed"

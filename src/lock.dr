@@ -3,10 +3,16 @@
 // A tag can be moved and a branch always moves, so "json at v1.0" is not the
 // same bytes on every machine that asks. The lock records, for every package
 // every program in the build resolved to, where it came from, which version
-// it said it was, and -- for a git dependency -- the commit that was checked
-// out. A later build that resolves to a different commit from the same place
-// stops and says so, rather than quietly building something else; `mind
-// update` is how the lock is told to move.
+// it said it was, for a git dependency the commit that was checked out, and
+// for anything fetched the hash of what arrived (fetch.dr's tree hash). A
+// later build that resolves to a different commit or different contents from
+// the same place stops and says so, rather than quietly building something
+// else; `mind update` is how the lock is told to move.
+//
+// The commit and the hash are both kept because they catch different things.
+// A commit is git's word for what it checked out, and a moved tag shows up
+// there first, in terms anyone can look up. The hash is the bytes, and it is
+// the only one a tarball, a mirror or a hand-edited cache can be held to.
 //
 // A program's packages and each build script's are separate namespaces, so the
 // lock has a section for each: `[program]`, `[build]` for this project's
@@ -29,15 +35,17 @@ import std.toml;
 
 import std.map;
 
-/// `[section, key, source, commit, version]`; `commit` and `version` may be
-/// `()` -- a path dependency has no commit, and a bare directory no version.
-let entry section key source commit version = [section, key, source, commit, version];
+/// `[section, key, source, commit, version, hash]`; any but the first three
+/// may be `()` -- a path dependency has no commit and no hash, a bare
+/// directory no version, and a lock written before hashes no hash.
+let entry section key source commit version hash = [section, key, source, commit, version, hash];
 
 let section_of e = list.nth 0 e;
 let key_of e = list.nth 1 e;
 let source_of e = list.nth 2 e;
 let commit_of e = list.nth 3 e;
 let version_of e = list.nth 4 e;
+let hash_of e = list.nth 5 e;
 
 let file_name = "mind.lock";
 
@@ -55,7 +63,7 @@ let field name v = match v { () => [], x => [name + " = " + toml.quote (to_strin
 let line e =
     toml.quote (key_of e) + " = { "
     + str.join_str ", " (list.concat [field "source" (source_of e), field "version" (version_of e),
-                                      field "commit" (commit_of e)])
+                                      field "commit" (commit_of e), field "hash" (hash_of e)])
     + " }";
 
 /// The file's text.
@@ -81,25 +89,34 @@ let parse text =
             map (fn kv -> {
                 let [key, v] = kv;
                 let get k = if type_of v == :map { v.[k else ()] } else { () };
-                entry section key (get "source") (get "commit") (get "version")
+                entry section key (get "source") (get "commit") (get "version") (get "hash")
             }) (map.pairs table)
         }) (filter (fn pair -> list.head pair != "") (map.pairs doc))),
         _ => [],
     };
 
-/// Every package that resolved to a different commit from the same source as
-/// the lock says: the one change a lock exists to catch. A changed source is
-/// the manifest being edited, which is somebody's decision, so it is not one.
+/// Every package that resolved to a different commit, or different contents,
+/// from the same source as the lock says: the one change a lock exists to
+/// catch. A changed source is the manifest being edited, which is somebody's
+/// decision, so it is not one. Something the lock does not record yet -- a
+/// hash in a lock from before them -- is learned, not compared.
 let drift : [[:any]] -> [[:any]] -> [[:any]];
 let drift old new = {
     let at e = section_of e + "\n" + key_of e;
     let before = fold (fn m e -> m.[at e => e]) (%{}) old;
+    let differ a b = a != () && b != () && a != b;
     filter (fn e -> match before.[at e else ()] {
         () => false,
-        o => source_of o == source_of e && commit_of o != () && commit_of e != ()
-             && commit_of o != commit_of e,
+        o => source_of o == source_of e
+             && (differ (commit_of o) (commit_of e) || differ (hash_of o) (hash_of e)),
     }) new
 };
+
+/// What the lock says each fetched source is, `source => [hash, commit]`:
+/// what a fetch may take from a mirror or the store in place of the source.
+let pinned : [[:any]] -> %{ :string => [:any] };
+let pinned entries =
+    fold (fn m e -> match hash_of e { () => m, h => m.[source_of e => [h, commit_of e]] }) (%{}) entries;
 
 /// What the lock says about one package, for the message about it.
 let locked old e =
@@ -137,21 +154,27 @@ let save! root entries = {
 when test {
     import std.test;
 
-    let a = entry "program" "json" "https://x/json#v1" "abc" "1.0.0";
-    let b = entry "build" "gen" "../gen" () "0.2.0";
+    let a = entry "program" "json" "https://x/json#v1" "abc" "1.0.0" "sha256:01";
+    let b = entry "build" "gen" "../gen" () "0.2.0" ();
 
     let tests = [
         test.case "a lock is sections of one line per package, sorted"
-            $( test.eq! (header + "\n[program]\n\"json\" = { source = \"https://x/json#v1\", version = \"1.0.0\", commit = \"abc\" }\n\n[build]\n\"gen\" = { source = \"../gen\", version = \"0.2.0\" }\n")
+            $( test.eq! (header + "\n[program]\n\"json\" = { source = \"https://x/json#v1\", version = \"1.0.0\", commit = \"abc\", hash = \"sha256:01\" }\n\n[build]\n\"gen\" = { source = \"../gen\", version = \"0.2.0\" }\n")
                         (render [b, a]) ),
         test.case "a lock reads back as what was written"
             $( test.eq! (sorted [a, b]) (sorted (parse (render [a, b]))) ),
         test.case "a new commit from the same source is drift"
             $( test.eq! [["program", "json"]]
                         (list.map (fn e -> [section_of e, key_of e])
-                                  (drift [a, b] [entry "program" "json" "https://x/json#v1" "def" "1.0.0", b])) ),
+                                  (drift [a, b] [entry "program" "json" "https://x/json#v1" "def" "1.0.0" "sha256:01", b])) ),
+        test.case "new contents at the same commit are drift"
+            $( test.eq! 1 (list.length (drift [a] [entry "program" "json" "https://x/json#v1" "abc" "1.0.0" "sha256:02"])) ),
+        test.case "a hash the lock did not have yet is learned"
+            $( test.eq! [] (drift [entry "program" "json" "https://x/json#v1" "abc" "1.0.0" ()] [a]) ),
         test.case "a new source is an edit, not drift"
-            $( test.eq! [] (drift [a] [entry "program" "json" "https://x/json#v2" "def" "2.0.0"]) ),
+            $( test.eq! [] (drift [a] [entry "program" "json" "https://x/json#v2" "def" "2.0.0" "sha256:02"]) ),
+        test.case "the lock pins each fetched source to its bytes"
+            $( test.eq! (%{ "https://x/json#v1" => ["sha256:01", "abc"] }) (pinned [a, b]) ),
         test.case "a partial walk keeps what it did not see"
             $( test.eq! [["program", "json"], ["build", "gen"]]
                         (list.map (fn e -> [section_of e, key_of e]) (merge [a, b] [a] false)) ),

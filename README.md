@@ -119,6 +119,8 @@ Given twice, the second is relative to the first.
 | `mind remove NAME` | take one out again |
 | `mind fetch` | download dependencies without building |
 | `mind update [NAME]` | fetch git and URL dependencies again |
+| `mind verify` | hash every fetched dependency again and hold it to `mind.lock` |
+| `mind mirror DIR` | write every fetched dependency into `DIR`, as a mirror serves it |
 | `mind deps`, `mind tree` | every package the project resolves to, as a list or as who needs what |
 | `mind info` | what this build would run, without running it |
 | `mind options` | every package's options, and what this build sets them to |
@@ -203,15 +205,46 @@ with where it was written, and whether any version could have met them all.
 
 ### `mind.lock`
 
-What the graph resolved to -- every package, its source, its version, and for
-git the commit checked out -- is written to `mind.lock`. Commit it. A build
-that finds a different commit behind the same source (a tag moved, a cache
-edited) stops and says so; `mind update` fetches again and accepts what it
-finds. Editing a dependency in the manifest is not drift; the lock follows.
+What the graph resolved to -- every package, its source, its version, for
+git the commit checked out, and for anything fetched the hash of its files --
+is written to `mind.lock`. Commit it. A build that finds a different commit or
+different contents behind the same source (a tag moved, a tarball replaced, a
+host compromised) stops and says so; `mind update` fetches again and accepts
+what it finds. Editing a dependency in the manifest is not drift; the lock
+follows.
+
+The hash is the SHA-256 of one line per file -- the file's own SHA-256 and
+its path, sorted -- so it depends on nothing but names and contents: a git
+checkout, a tarball and a mirror's copy of the same tree agree. `.git` and
+`mind`'s own `.mind-*` markers are not part of it.
 
 Fetched packages are cached in `$MIND_HOME/cache` by URL and revision and
 shared between projects. Fetching shells out to `git`, `curl` and `tar`,
-which already know about proxies, credentials and certificate stores.
+which already know about proxies, credentials and certificate stores. A build
+trusts the hash it computed when it fetched, rather than rereading every
+dependency each time; `mind verify` rereads them, for a cache that may have
+been changed by hand.
+
+### Mirrors
+
+Once the lock names a package's bytes, it does not matter who serves them.
+When a locked dependency's source cannot be reached, `mind` asks each mirror
+for `HEX.tar.gz`, unpacks it, and uses it only if it hashes to what the lock
+says. A mirror is a directory or a URL, from `$MIND_MIRRORS` (spaces or
+commas between them; tried first, being the machine's answer) or the
+manifest:
+
+```toml
+[fetch]
+mirrors = ["vendor", "https://mirror.example.com/dream"]
+```
+
+`mind mirror DIR` writes every fetched dependency there. Commit the directory
+to build with no network, put it behind `mind serve` or any static host for a
+team, or keep one on a CI runner. A mirror is never trusted, only checked: one
+that serves anything else is refused and the next is asked. A copy from a
+mirror is kept by its hash, in `$MIND_HOME/cache/sha256`. `mind update` asks
+the sources and nothing else, since moving the lock is the point of it.
 
 ### Cycles
 
@@ -380,6 +413,7 @@ on.
 | `MINDV2_PATH` | the installation: where `dreams.dream` is found |
 | `MIND_STDLIB` | the directory holding `std` |
 | `MIND_HOME` | fetched packages, the build cache and the unit cache (default `~/.mind`) |
+| `MIND_MIRRORS` | where to fetch a locked package whose source is down, before `[fetch] mirrors` |
 | `MIND_BUILD_CACHE` | where build steps are cached (default `$MIND_HOME/build`) |
 | `MIND_UNITS` | where the compiler keeps each module's work between builds (default `$MIND_HOME/units`; `off` for none). Entries unused for 30 days are removed |
 
@@ -392,10 +426,10 @@ whose checks `mind test mind` runs after the units.
 |---|---|
 | `main.dr` | the commands and their arguments |
 | `manifest.dr` | reading `mind.toml`, and the line edits `add` and `remove` make |
-| `fetch.dr` | a dependency to a directory, fetching when needed |
+| `fetch.dr` | a dependency to a directory, fetching when needed; the tree hash, the store and mirrors |
 | `build.dr` | the dependency graph, options, and calling the compiler (the module, not the script) |
 | `script.dr` | running build scripts and folding what they make into the compile |
-| `lock.dr` | `mind.lock`, and what counts as drift |
+| `lock.dr` | `mind.lock`, and what counts as drift: a commit or a hash |
 | `docs.dr`, `documentation/` | `mind docs`: guides, API pages, examples run, links, the theme |
 | `serve.dr` | `mind serve` and `mind docs serve` |
 | `pack/` | `mind pack` and every package format it writes |

@@ -135,6 +135,16 @@ let includes m = map (fn d -> path.join (root m) d) (build_list m "includes");
 /// Modules the host registers at run time, so importing them compiles.
 let host_modules m = build_list m "host-modules";
 
+/// Where to fetch a locked package when its source cannot be reached:
+/// `[fetch] mirrors`, each a directory (relative to the manifest) or a URL.
+/// See fetch.dr for what a mirror holds.
+let mirrors m =
+    list.map (fn mirror -> if str.find "://" mirror >= 0 { mirror } else { path.join (root m) mirror })
+        (match toml.get () (doc m) "fetch" "mirrors" {
+            () => [],
+            v => match type_of v { :list => v, _ => [v] },
+        });
+
 // --- `[payload]`: files carried in the image ---------------------------------
 //
 // `[payload]` maps a name to a file, relative to the manifest:

@@ -96,6 +96,8 @@ let command_spec = [
     cli.command "remove" "remove a dependency by name" [],
     cli.command "fetch" "download dependencies without building" [],
     cli.command "update" "fetch branch- and url-pinned dependencies again" [],
+    cli.command "verify" "hash every fetched dependency again and check it against mind.lock" [],
+    cli.command "mirror" "write every fetched dependency into DIR, for $MIND_MIRRORS" [],
     cli.command "deps"  "list every package this project resolves to" [],
     cli.command "tree"  "show the dependency tree" [],
     cli.command "info"  "show what this build would run, without running it" [],
@@ -137,6 +139,16 @@ lines for you:
 A git dependency must be pinned with a tag, a branch or a commit. Fetched
 packages are cached in $MIND_HOME/cache (default ~/.mind/cache) and never
 fetched twice; `mind update` fetches the ones pinned to a branch or a URL again.
+
+mind.lock records the hash of every fetched package, and a source that serves
+anything else stops the build. When a source cannot be reached, the locked
+bytes are fetched from a mirror instead -- a directory or URL holding
+HEX.tar.gz, named in $MIND_MIRRORS or in the manifest:
+
+  [fetch]
+  mirrors = [\"vendor\", \"https://mirror.example.com/dream\"]
+
+`mind mirror DIR` writes one, and `mind verify` rehashes the cache.
 
 `[build]` is only for how *this* package is compiled, and every key has a
 command-line spelling that wins over it:
@@ -657,6 +669,57 @@ let cmd_update! m o names = {
     :ok
 };
 
+/// Every fetched package of every program in the build, build scripts'
+/// included, once each.
+let fetched g = {
+    let every = list.concat (list.cons (build.nodes g)
+                                       (map (fn pair -> build.nodes (list.nth 1 pair)) (build.build_graphs g)));
+    let rec once ns seen acc =
+        match ns {
+            [] => list.reverse acc,
+            [n, ..rest] => {
+                let dir = build.node_dir n;
+                if manifest.dep_kind (build.node_dep n) == :path || seen.[dir else false] { once rest seen acc }
+                else { once rest seen.[dir => true] (list.cons n acc) }
+            },
+        };
+    once every (%{}) []
+};
+
+/// Hash every fetched package again and hold it to the hash it was fetched
+/// with, which the walk has just held to the lock. A build trusts the hash it
+/// kept rather than reading every file of every dependency each time, so a
+/// cache changed by hand gets past a build; it does not get past this.
+let cmd_verify! m o = {
+    let ns = fetched (graph_of! m o);
+    let changed = list.filter (fn n -> fetch.tree_hash! (build.node_dir n)
+                                  != fetch.hash! (build.node_dep n) (build.node_dir n)) ns;
+    match changed {
+        [] => console.print! ("verified " + to_string (list.length ns) + " fetched packages against mind.lock"),
+        _ => fail! ("these packages' files are not what was fetched:\n"
+                    + str.join_str "\n" (map (fn n -> "  " + describe n + "  (" + build.node_dir n + ")") changed)
+                    + "\n`mind update NAME` fetches each again"),
+    }
+};
+
+/// Write every fetched package into a directory as a mirror holds it, so that
+/// `$MIND_MIRRORS` or `[fetch] mirrors` pointed there builds this project with
+/// none of its sources reachable. The directory can be served as it is, by
+/// `mind serve` or anything else, or committed beside the project.
+let cmd_mirror! m o args = {
+    let into = match args { [d] => d, _ => fail! "mirror needs one directory to write into" };
+    let g = graph_of! m o;
+    file.mkdir_all! into
+    let wrote = list.map (fn n -> match fetch.archive! (fetch.hash! (build.node_dep n) (build.node_dir n))
+                                                  (build.node_dir n) into {
+        Result.error(why) => fail! (build.node_key n + ": " + why),
+        Result.ok(w) => w,
+    }) (fetched g);
+    let fresh = list.length (filter (fn w -> w) wrote);
+    console.print! ("wrote " + to_string fresh + " packages to " + into
+                    + (match list.length wrote - fresh { 0 => "", k => " (" + to_string k + " already there)" }))
+};
+
 // --- adding and removing -------------------------------------------------------
 
 /// The spec `mind add` writes, from what was typed: the source read the way
@@ -710,7 +773,7 @@ let cmd_add! m c args = {
     };
     let section = if cli.flag_set c "dev" { "dev-dependencies" } else { "dependencies" };
     let probe = [guessed_name source, spec];
-    match fetch.resolve! (manifest.root m) probe {
+    match fetch.resolve! (manifest.root m) probe () [] {
         Result.error(why) => fail! why,
         Result.ok(dir) => {
             let key = add_name! source dir c;
@@ -899,6 +962,8 @@ let run_command! c theirs = {
                   "tree"  => cmd_tree! (project! ()) o,
                   "fetch" => cmd_fetch! (project! ()) o,
                   "update" => cmd_update! (project! ()) o (cli.rest c),
+                  "verify" => cmd_verify! (project! ()) o,
+                  "mirror" => cmd_mirror! (project! ()) o (cli.rest c),
                   "add"   => cmd_add! (project! ()) c (cli.rest c),
                   "remove" => cmd_remove! (project! ()) (cli.rest c),
                   "clean" => cmd_clean! (project! ()),

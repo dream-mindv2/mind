@@ -10,7 +10,17 @@
 // protocols. They are already installed, already know about proxies and
 // credentials and certificate stores, and none of that is a build tool's
 // business.
+//
+// **A package is its bytes, not its URL.** Every fetched copy is hashed (see
+// "the tree hash" below) and `mind.lock` records the hash, so a host that
+// serves different bytes behind the same name -- a moved tag, a replaced
+// tarball, a compromised server -- stops the build instead of changing it.
+// And once the bytes are named, where they come from stops mattering: a
+// dependency whose source is down is fetched from a mirror (`$MIND_MIRRORS`,
+// `[fetch] mirrors`), anything that serves `HEX.tar.gz`, and trusted exactly
+// as far as its hash agrees with the lock. `mind mirror DIR` writes one.
 
+import std.crypto;
 import std.file;
 import std.io;
 import std.list;
@@ -105,6 +115,183 @@ let url_fetch! d dir = {
     }
 };
 
+// --- the tree hash ------------------------------------------------------------
+//
+// What a fetched package hashes to: the SHA-256 of one line per file, sorted
+// by path, each the file's own SHA-256 in hex, two spaces and its path. It is
+// Go's `dirhash` with a different prefix, and for the reasons Go chose it: it
+// depends on nothing but the files' names and contents, so a git checkout, a
+// tarball of the same tree and a mirror's copy all agree, whatever tool made
+// them or when. Modes and timestamps are left out because an archive does not
+// carry them faithfully, and git's own `.git` and `mind`'s markers because
+// they record how the copy was made, not what it is.
+
+/// Where a fetched copy keeps its hash, so a build hashes nothing it hashed
+/// before. `mind verify` is what rehashes, for a cache that may have been
+/// changed by hand.
+let hash_file = ".mind-hash";
+
+let prefix = "sha256:";
+
+/// Whether a file under a package is part of what it is.
+let hashed rel =
+    list.all (fn part -> not (list.contains part [".git", marker, commit_file, hash_file]))
+             (path.segments rel);
+
+/// The hash of everything under `dir` that is the package's.
+let tree_hash! : :string -> :string;
+let tree_hash! dir = {
+    let line! rel = crypto.hex (crypto.digest_file! :sha256 (path.join dir rel)) + "  " + rel + "\n";
+    prefix + crypto.hex (crypto.sha256 (str.concat_all (list.map line! (list.filter hashed (file.walk! dir)))))
+};
+
+/// A hash's hex digits, or `()` for text that is not one of ours. The lock is
+/// a file anyone can edit in a pull request, and the hex becomes a path below
+/// the cache and a name asked of a mirror, so a `../` in it must go nowhere.
+let hex_of : :string -> :string | :unit;
+let hex_of h = {
+    let hex = str.trim_prefix prefix h;
+    let digit c = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+    match str.starts_with prefix h && str.byte_length hex == 64 && str.all digit hex {
+        true => hex,
+        false => (),
+    }
+};
+
+/// The hash of a fetched dependency's copy, or `()` for a directory on this
+/// machine, which is the project's to change and has nothing to pin. Kept in
+/// `hash_file` after the first time, as `commit!` keeps its commit.
+let hash! d dir =
+    match manifest.dep_kind d {
+        :git => cached_hash! dir,
+        :url => cached_hash! dir,
+        _ => (),
+    };
+
+let cached_hash! dir =
+    match file.read! (path.join dir hash_file) {
+        () => {
+            let h = tree_hash! dir;
+            file.write! (path.join dir hash_file) (h + "\n")
+            h
+        },
+        text => str.trim text,
+    };
+
+// --- the store and the mirrors ------------------------------------------------
+//
+// A copy that came from a mirror is kept by its hash, `cache/sha256/HEX`, and
+// not under its source's name: its source is exactly what could not be
+// reached, and the hash is the one thing about it that has been checked.
+
+let stored! hex = path.join (path.join (path.join (cache_root! ()) "cache") "sha256") hex;
+
+/// A mirror named by a URL rather than a directory.
+let is_url mirror = str.find "://" mirror >= 0;
+
+/// Where a mirror keeps a package: `HEX.tar.gz`, in a directory or under a URL.
+let archive_at mirror hex =
+    match is_url mirror {
+        true => str.trim_suffix "/" mirror + "/" + hex + ".tar.gz",
+        false => path.join mirror (hex + ".tar.gz"),
+    };
+
+/// Unpack a mirror's archive of `hex` into `dir`.
+let unpack! mirror hex dir = {
+    let at = archive_at mirror hex;
+    let local = match is_url mirror { true => dir + ".tar.gz", false => at };
+    let got = match is_url mirror {
+        true => run! "curl" "curl" ["--fail", "--silent", "--show-error", "--location", "--output", local, at],
+        false => if io.exists! at { ok "" } else { Result.error "not there" },
+    };
+    match got {
+        Result.error(why) => Result.error why,
+        _ => {
+            let r = run! "tar" "tar" ["-xzf", local, "-C", dir];
+            if local != at { file.remove_all! local }
+            r
+        },
+    }
+};
+
+/// Write a fetched copy into a mirror directory as `HEX.tar.gz`, unless it is
+/// there already. Answers whether it wrote one. Written beside and renamed, so
+/// a mirror being read while it is written never serves half an archive --
+/// which would only be refused, but refused is not served.
+let archive! : :string -> :string -> :string -> Result :bool :string;
+let archive! h from into = {
+    let hex = hex_of h;
+    let out = path.join into (to_string hex + ".tar.gz");
+    match [hex, io.exists! out] {
+        [(), _] => Result.error (from + " has no hash to name it by"),
+        [_, true] => ok false,
+        _ => {
+            let scratch = out + ".tmp-" + file.scratch_suffix! ();
+            match run! "tar" "tar" ["-czf", scratch, "--exclude=.git", "--exclude=" + marker,
+                                    "--exclude=" + commit_file, "--exclude=" + hash_file, "-C", from, "."] {
+                Result.error(why) => { file.remove_all! scratch; Result.error why },
+                _ => { io.rename! scratch out; ok true },
+            }
+        },
+    }
+};
+
+/// Fetch the package that hashes to `h` from the first mirror whose copy
+/// does, into the store. `commit` is what the lock says a git dependency was
+/// checked out at; a mirror's archive has no `.git` to ask, and what it says
+/// about itself is not what was checked.
+let from_mirrors! mirrors h commit = {
+    let hex = hex_of h;
+    let rec go! ms tried =
+        match ms {
+            [] => Result.error ("no mirror has " + h
+                                + (if list.is_empty tried { " (none is configured: $MIND_MIRRORS or [fetch] mirrors)" }
+                                   else { ":\n    " + str.join_str "\n    " (list.reverse tried) })),
+            [mirror, ..rest] => {
+                let dir = stored! hex;
+                let scratch = dir + ".tmp-" + file.scratch_suffix! ();
+                file.remove_all! scratch
+                file.mkdir_all! scratch
+                match unpack! mirror hex scratch {
+                    Result.error(why) => {
+                        file.remove_all! scratch
+                        go! rest (list.cons (mirror + ": " + why) tried)
+                    },
+                    _ => {
+                        strict! (map (fn f -> file.remove_all! (path.join scratch f)) [marker, commit_file, hash_file])
+                        let got = tree_hash! scratch;
+                        if got != h {
+                            file.remove_all! scratch
+                            go! rest (list.cons (mirror + ": served different contents (" + got + ")") tried)
+                        } else {
+                            file.write! (path.join scratch hash_file) (h + "\n")
+                            match commit { () => (), c => file.write! (path.join scratch commit_file) (c + "\n") }
+                            file.write! (path.join scratch marker) (mirror + "\n")
+                            // Another build may have put the same bytes there
+                            // first, which is as good.
+                            try! { io.rename! scratch dir } catch e { file.remove_all! scratch }
+                            ok dir
+                        }
+                    },
+                }
+            },
+        };
+    match hex {
+        () => Result.error ("mind.lock records `" + h + "`, which is not a hash this mind can check"),
+        _ => go! mirrors [],
+    }
+};
+
+/// The mirrors to try: `$MIND_MIRRORS`, separated by spaces or commas, then
+/// the project's own. The environment comes first because it is the machine's
+/// answer -- an office's cache, a CI runner's directory -- to where things
+/// are nearest.
+let mirrors! : [:string] -> [:string];
+let mirrors! own = {
+    let env = match os.env! "MIND_MIRRORS" { () => [], v => str.words (str.replace "," " " v) };
+    list.unique (list.append env own)
+};
+
 /// Written into a fetched directory once the fetch has finished. A dependency
 /// need not have a manifest, so "is there a `mind.toml`?" cannot be how a
 /// complete fetch is told from one that died halfway; this is. A directory from
@@ -128,7 +315,13 @@ let forget! d =
 /// A fetched dependency is never re-fetched: it is pinned to a revision, so
 /// the copy in the cache is by definition the right one. `mind update` is how
 /// to change your mind about a branch.
-let resolve! from_root d = {
+///
+/// `locked` is what `mind.lock` says about this source, `[hash, commit]`, or
+/// `()`. With it a copy can come from the store or a mirror when the source
+/// cannot be reached. Without it the source is the only authority there is.
+/// Whether the copy found agrees with the lock is `build.resolve!`'s to say,
+/// for every package at once.
+let resolve! from_root d locked mirrors = {
     match manifest.dep_kind d {
         :path => {
             // Relative to the manifest that named it, so moving a project
@@ -140,7 +333,9 @@ let resolve! from_root d = {
         :unknown => Result.error (manifest.dep_name d + ": needs one of `path`, `git` or `url`"),
         kind => {
             let dir = dep_dir! d;
+            let in_store = match locked { [h, _] => match hex_of h { () => (), hex => stored! hex }, _ => () };
             if is_fetched! dir { ok dir }
+            else if in_store != () && is_fetched! in_store { ok in_store }
             else {
                 // A partial copy from a fetch that died is in the way of
                 // `git clone`, which refuses a directory that is not empty.
@@ -148,10 +343,20 @@ let resolve! from_root d = {
                 file.mkdir_all! (path.dirname dir)
                 let got = match kind { :git => git_fetch! d dir, _ => url_fetch! d dir };
                 match got {
-                    Result.error(why) => Result.error (manifest.dep_name d + ": " + why),
+                    Result.error(why) => match locked {
+                        [h, commit] => {
+                            run! "rm" "rm" ["-rf", dir]
+                            match from_mirrors! mirrors h commit {
+                                Result.ok(at) => ok at,
+                                Result.error(also) => Result.error (manifest.dep_name d + ": " + why + "\nand " + also),
+                            }
+                        },
+                        _ => Result.error (manifest.dep_name d + ": " + why),
+                    },
                     _ => {
                         file.write! (path.join dir marker) (manifest.dep_source d + "\n")
                         commit! d dir
+                        hash! d dir
                         ok dir
                     },
                 }
@@ -197,5 +402,15 @@ when test {
             $( test.eq! "https___x.y_z" (slug "https://x.y/z") ),
         test.case "slug keeps dots and dashes"
             $( test.eq! "a-b.c" (slug "a-b.c") ),
+        test.case "git's and mind's own files are not the package"
+            $( test.eq! [true, false, false, false, true]
+                        (map hashed ["src/lib.dr", ".git/HEAD", "sub/.git/config", ".mind-hash", "a.mind-hash"]) ),
+        test.case "only a hash's own spelling names a place"
+            $( test.eq! [str.repeat 64 "a", (), (), ()]
+                        (map hex_of ["sha256:" + str.repeat 64 "a", "sha256:../../etc", "md5:" + str.repeat 64 "a",
+                                     "sha256:" + str.repeat 64 "A"]) ),
+        test.case "a mirror is a directory or a URL"
+            $( test.eq! ["m/ab.tar.gz", "https://x/m/ab.tar.gz"]
+                        [archive_at "m" "ab", archive_at "https://x/m/" "ab"] ),
     ];
 }
