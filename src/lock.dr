@@ -14,6 +14,13 @@
 // there first, in terms anyone can look up. The hash is the bytes, and it is
 // the only one a tarball, a mirror or a hand-edited cache can be held to.
 //
+// The lock is also what remembers trust (sign.dr): the key that signed each
+// package, the keys the project named for it when it did, and the keys that
+// have been rotated away; and, in a `[revoked]` section of its own, every key
+// a package has been seen to revoke. A statement in a package is only there
+// for as long as whoever serves the package leaves it in, so what one has
+// once said is written here, where it outlives the package that said it.
+//
 // A program's packages and each build script's are separate namespaces, so the
 // lock has a section for each: `[program]`, `[build]` for this project's
 // script, and `[build.KEY]` for a dependency's. Each package is one line, an
@@ -35,46 +42,66 @@ import std.toml;
 
 import std.map;
 
-/// `[section, key, source, commit, version, hash]`; any but the first three
-/// may be `()` -- a path dependency has no commit and no hash, a bare
-/// directory no version, and a lock written before hashes no hash.
-let entry section key source commit version hash = [section, key, source, commit, version, hash];
+/// One package as the lock records it, or one revoked key (`section` is
+/// `revoked`, `key` the key, `source` where it was seen). Every field but the
+/// first three may be absent: a path dependency has no commit, hash or
+/// signer, a bare directory no version, and a lock from before a field was
+/// recorded does not have it.
+mapping Entry {
+    section : :string
+    key : :string
+    source = ()
+    commit = ()
+    version = ()
+    hash = ()
+    signer = ()
+    // The keys the project named for it when `signer` was recorded, spelled
+    // and sorted: when they change, the project has chosen to trust anew.
+    keys = []
+    retired = []
+}
 
-let section_of e = list.nth 0 e;
-let key_of e = list.nth 1 e;
-let source_of e = list.nth 2 e;
-let commit_of e = list.nth 3 e;
-let version_of e = list.nth 4 e;
-let hash_of e = list.nth 5 e;
+/// The section revocations are kept in.
+let revoked_section = "revoked";
 
 let file_name = "mind.lock";
 
 let header = "# What this project's dependencies resolved to. Written by `mind`;\n"
              + "# `mind update` moves it. Commit it with the manifest.\n";
 
-/// Sorted by section, `program` first, then by key.
+/// Sorted by section, `program` first and `revoked` last, then by key.
+let sorted : [Entry] -> [Entry];
 let sorted entries = {
-    let rank e = if section_of e == "program" { 0 } else { 1 };
-    list.sort_on (fn e -> [rank e, section_of e, key_of e]) entries
+    let rank e = match Entry.section e { "program" => 0, s if s == revoked_section => 2, _ => 1 };
+    list.sort_on (fn e -> [rank e, Entry.section e, Entry.key e]) entries
 };
 
 let field name v = match v { () => [], x => [name + " = " + toml.quote (to_string x)] };
 
+let list_field name vs = match vs {
+    [] => [],
+    xs => [name + " = [" + str.join_str ", " (list.map (fn x -> toml.quote (to_string x)) xs) + "]"],
+};
+
+let line : Entry -> :string;
 let line e =
-    toml.quote (key_of e) + " = { "
-    + str.join_str ", " (list.concat [field "source" (source_of e), field "version" (version_of e),
-                                      field "commit" (commit_of e), field "hash" (hash_of e)])
+    toml.quote (Entry.key e) + " = { "
+    + str.join_str ", " (list.concat [field "source" (Entry.source e), field "version" (Entry.version e),
+                                      field "commit" (Entry.commit e), field "hash" (Entry.hash e),
+                                      field "signer" (Entry.signer e), list_field "keys" (Entry.keys e),
+                                      list_field "retired" (Entry.retired e)])
     + " }";
 
 /// The file's text.
+let render : [Entry] -> :string;
 let render entries = {
     let rec go es current acc =
         match es {
             [] => acc,
             [e, ..rest] => {
-                let head = if section_of e == current { [] }
-                           else { ["", "[" + section_of e + "]"] };
-                go rest (section_of e) (list.concat [acc, head, [line e]])
+                let head = if Entry.section e == current { [] }
+                           else { ["", "[" + Entry.section e + "]"] };
+                go rest (Entry.section e) (list.concat [acc, head, [line e]])
             },
         };
     header + str.join_str "\n" (go (sorted entries) () []) + "\n"
@@ -82,6 +109,7 @@ let render entries = {
 
 /// The entries a lock file holds, or `[]` for one that cannot be read -- a
 /// broken lock is rewritten rather than trusted.
+let parse : :string -> [Entry];
 let parse text =
     match toml.parse text {
         Result.ok(doc) => list.concat (map (fn pair -> {
@@ -89,55 +117,79 @@ let parse text =
             map (fn kv -> {
                 let [key, v] = kv;
                 let get k = if type_of v == :map { v.[k else ()] } else { () };
-                entry section key (get "source") (get "commit") (get "version") (get "hash")
+                let many k = match get k { () => [], xs if type_of xs == :list => xs, x => [x] };
+                Entry.make section key (get "source") (get "commit") (get "version") (get "hash") (get "signer")
+                           (many "keys") (many "retired")
             }) (map.pairs table)
         }) (filter (fn pair -> list.head pair != "") (map.pairs doc))),
         _ => [],
     };
+
+/// The packages, without the revocations.
+let packages : [Entry] -> [Entry];
+let packages entries = list.filter (fn e -> Entry.section e != revoked_section) entries;
+
+/// The keys revoked, as spelled.
+let revoked : [Entry] -> [:string];
+let revoked entries = list.map Entry.key (list.filter (fn e -> Entry.section e == revoked_section) entries);
+
+/// A revocation, as an entry.
+let revocation : :string -> :string -> Entry;
+let revocation key seen = (Entry.new revoked_section key) |> Entry.set_source seen;
 
 /// Every package that resolved to a different commit, or different contents,
 /// from the same source as the lock says: the one change a lock exists to
 /// catch. A changed source is the manifest being edited, which is somebody's
 /// decision, so it is not one. Something the lock does not record yet -- a
 /// hash in a lock from before them -- is learned, not compared.
-let drift : [[:any]] -> [[:any]] -> [[:any]];
+let drift : [Entry] -> [Entry] -> [Entry];
 let drift old new = {
-    let at e = section_of e + "\n" + key_of e;
-    let before = fold (fn m e -> m.[at e => e]) (%{}) old;
+    let at e = Entry.section e + "\n" + Entry.key e;
+    let before = fold (fn m e -> m.[at e => e]) (%{}) (packages old);
     let differ a b = a != () && b != () && a != b;
     filter (fn e -> match before.[at e else ()] {
         () => false,
-        o => source_of o == source_of e
-             && (differ (commit_of o) (commit_of e) || differ (hash_of o) (hash_of e)),
-    }) new
+        o => Entry.source o == Entry.source e
+             && (differ (Entry.commit o) (Entry.commit e) || differ (Entry.hash o) (Entry.hash e)),
+    }) (packages new)
 };
 
-/// What the lock says each fetched source is, `source => [hash, commit]`:
-/// what a fetch may take from a mirror or the store in place of the source.
-let pinned : [[:any]] -> %{ :string => [:any] };
-let pinned entries =
-    fold (fn m e -> match hash_of e { () => m, h => m.[source_of e => [h, commit_of e]] }) (%{}) entries;
+/// What the lock says about each fetched source, `source => entry`: the bytes
+/// a fetch may take from a mirror or the store in place of the source, and
+/// who it trusted to sign them.
+let by_source : [Entry] -> %{ :string => Entry };
+let by_source entries =
+    fold (fn m e -> match Entry.source e { () => m, s => m.[s => e] }) (%{}) (packages entries);
+
+/// What the lock says about each package by the key it is imported as, the
+/// program's entry first when a build script has one by the same key: what
+/// trust is remembered by, since a release moves the source along with its tag.
+let by_key : [Entry] -> %{ :string => Entry };
+let by_key entries =
+    fold (fn m e -> if map.has (Entry.key e) m { m } else { m.[Entry.key e => e] }) (%{}) (sorted (packages entries));
 
 /// What the lock says about one package, for the message about it.
+let locked : [Entry] -> Entry -> Entry | :unit;
 let locked old e =
-    list.head (filter (fn o -> section_of o == section_of e && key_of o == key_of e) old);
+    match list.filter (fn o -> Entry.section o == Entry.section e && Entry.key o == Entry.key e) old {
+        [o, .._] => o,
+        [] => (),
+    };
 
 /// A walk that did not see everything -- a build without dev dependencies --
 /// keeps the entries it did not see, so building and testing do not rewrite
-/// the lock back and forth. A full walk (`complete`) replaces it.
-let merge : [[:any]] -> [[:any]] -> :bool -> [[:any]];
-let merge old new complete =
-    if complete { new }
-    else {
-        let at e = section_of e + "\n" + key_of e;
-        let seen = fold (fn m e -> m.[at e => true]) (%{}) new;
-        list.append new (filter (fn o -> not (seen.[at o else false])) old)
-    };
+/// the lock back and forth. A full walk (`complete`) replaces it. Either way
+/// a revocation is never forgotten.
+let merge : [Entry] -> [Entry] -> :bool -> [Entry];
+let merge old new complete = {
+    let at e = Entry.section e + "\n" + Entry.key e;
+    let seen = fold (fn m e -> m.[at e => true]) (%{}) new;
+    let kept = if complete { list.filter (fn o -> Entry.section o == revoked_section) old } else { old };
+    list.append new (filter (fn o -> not (seen.[at o else false])) kept)
+};
 
 let load! root = match file.read! (path.join root file_name) { () => [], text => parse text };
 
-/// Write the lock when its text would change, and not otherwise: a build that
-/// resolved the same graph leaves the file, and its timestamp, alone.
 /// Write the lock, if it changed. A lock that would record nothing is not
 /// created where there was none: a project with no dependencies, or a lone
 /// file run by `mind run hello.dr`, has nothing to pin, and a file appearing
@@ -154,31 +206,32 @@ let save! root entries = {
 when test {
     import std.test;
 
-    let a = entry "program" "json" "https://x/json#v1" "abc" "1.0.0" "sha256:01";
-    let b = entry "build" "gen" "../gen" () "0.2.0" ();
+    let a = Entry.make "program" "json" "https://x/json#v1" "abc" "1.0.0" "sha256:01" "ed25519:aa" ["ed25519:aa"] [];
+    let b = Entry.new "build" "gen" |> Entry.set_source "../gen" |> Entry.set_version "0.2.0";
+    let r = revocation "ed25519:bb" "https://x/json#v1";
+    let keys es = list.map (fn e -> [Entry.section e, Entry.key e]) es;
 
     let tests = [
-        test.case "a lock is sections of one line per package, sorted"
-            $( test.eq! (header + "\n[program]\n\"json\" = { source = \"https://x/json#v1\", version = \"1.0.0\", commit = \"abc\", hash = \"sha256:01\" }\n\n[build]\n\"gen\" = { source = \"../gen\", version = \"0.2.0\" }\n")
-                        (render [b, a]) ),
+        test.case "a lock is sections of one line per package, sorted, revocations last"
+            $( test.eq! (header + "\n[program]\n\"json\" = { source = \"https://x/json#v1\", version = \"1.0.0\", commit = \"abc\", hash = \"sha256:01\", signer = \"ed25519:aa\", keys = [\"ed25519:aa\"] }\n\n[build]\n\"gen\" = { source = \"../gen\", version = \"0.2.0\" }\n\n[revoked]\n\"ed25519:bb\" = { source = \"https://x/json#v1\" }\n")
+                        (render [r, b, a]) ),
         test.case "a lock reads back as what was written"
-            $( test.eq! (sorted [a, b]) (sorted (parse (render [a, b]))) ),
+            $( test.eq! (sorted [a, b, r]) (sorted (parse (render [a, b, r]))) ),
         test.case "a new commit from the same source is drift"
-            $( test.eq! [["program", "json"]]
-                        (list.map (fn e -> [section_of e, key_of e])
-                                  (drift [a, b] [entry "program" "json" "https://x/json#v1" "def" "1.0.0" "sha256:01", b])) ),
+            $( test.eq! [["program", "json"]] (keys (drift [a, b] [Entry.set_commit "def" a, b])) ),
         test.case "new contents at the same commit are drift"
-            $( test.eq! 1 (list.length (drift [a] [entry "program" "json" "https://x/json#v1" "abc" "1.0.0" "sha256:02"])) ),
+            $( test.eq! 1 (list.length (drift [a] [Entry.set_hash "sha256:02" a])) ),
         test.case "a hash the lock did not have yet is learned"
-            $( test.eq! [] (drift [entry "program" "json" "https://x/json#v1" "abc" "1.0.0" ()] [a]) ),
+            $( test.eq! [] (drift [Entry.set_hash () a] [a]) ),
         test.case "a new source is an edit, not drift"
-            $( test.eq! [] (drift [a] [entry "program" "json" "https://x/json#v2" "def" "2.0.0" "sha256:02"]) ),
-        test.case "the lock pins each fetched source to its bytes"
-            $( test.eq! (%{ "https://x/json#v1" => ["sha256:01", "abc"] }) (pinned [a, b]) ),
+            $( test.eq! [] (drift [a] [a |> Entry.set_source "https://x/json#v2" |> Entry.set_hash "sha256:02"]) ),
+        test.case "the lock is found again by source"
+            $( test.eq! ["../gen", "https://x/json#v1"] (list.sort (map.keys (by_source [a, b, r]))) ),
+        test.case "revocations are kept apart from packages"
+            $( test.eq! [["ed25519:bb"], 2] [revoked [a, r, b], list.length (packages [a, r, b])] ),
         test.case "a partial walk keeps what it did not see"
-            $( test.eq! [["program", "json"], ["build", "gen"]]
-                        (list.map (fn e -> [section_of e, key_of e]) (merge [a, b] [a] false)) ),
-        test.case "a complete walk replaces the lock"
-            $( test.eq! 1 (list.length (merge [a, b] [a] true)) ),
+            $( test.eq! [["program", "json"], ["build", "gen"]] (keys (merge [a, b] [a] false)) ),
+        test.case "a complete walk replaces the packages, and never forgets a revocation"
+            $( test.eq! [["program", "json"], ["revoked", "ed25519:bb"]] (keys (merge [a, b, r] [a] true)) ),
     ];
 }

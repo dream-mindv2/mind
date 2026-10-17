@@ -7,26 +7,40 @@
 //
 //     json = { git = "https://github.com/u/json", tag = "v1.4", keys = ["ed25519:3d40.."] }
 //
-// is only used when it carries a signature by one of them over the bytes that
-// arrived, so a host -- or a mirror, or anyone between -- can serve a release
-// only its author signed.
+// -- or that the root's `[trust]` names keys for -- is only used when it
+// carries a signature by one of them over the bytes that arrived, so a host,
+// a mirror, or anyone between can serve a release only its author signed.
 //
-// **What is signed is the tree hash** (fetch.dr), the one already in the lock,
-// behind a line naming what it is (`message`), so that a key used for this
-// signs nothing that could be taken for something else. The signatures are a
-// file in the package, `mind.sig`, one line per key, and the tree hash leaves
-// that file out: adding a signature changes nothing it signs, and the
-// signature travels with the bytes through git, a tarball and a mirror alike.
-// `mind sign` writes the line; committing the file and then tagging is a
-// release.
+// **What is signed** is the tree hash (fetch.dr), the one already in the lock,
+// and the name of the release, behind a line saying what the message is
+// (`release_message`), so that a key used here signs nothing that could be
+// taken for something else. The release's name is what stops an old signed
+// release from being served in place of a new one: a dependency pinned to
+// tag `v1.4` needs a signature *of* `v1.4`, and `v1.0`'s does not do.
 //
-// **Keys are Ed25519** (`std.crypto`), written `ed25519:` and 64 hex digits.
-// A secret key is a file holding its 32-byte seed in hex, `mind keygen`
-// makes one, and nothing here ever prints it.
+// The signatures are a file in the package, `mind.sig`, one statement per
+// line, and the tree hash leaves that file out: adding one changes nothing it
+// signs, and it travels with the bytes through git, a tarball and a mirror.
+// There are three statements, each signed by the key it is about:
 //
-// What a signature does not do: say *which* release. The bytes it covers
-// include `mind.toml` and its version, so a `version` requirement in the
-// entry is what refuses an old release served in place of a new one.
+//     release ed25519:KEY v1.4 sha256:HASH SIG    KEY made these bytes as v1.4
+//     rotate ed25519:OLD ed25519:NEW SIG          OLD hands over to NEW
+//     revoke ed25519:KEY SIG                      KEY is not to be trusted again
+//
+// **Who is trusted** (`decide`) starts from the keys the manifest names and
+// the key the lock last saw sign the package, follows each through any
+// rotations, and leaves out every key that has been rotated away or revoked.
+// A rotation and a revocation are both *remembered* -- the lock keeps the
+// retired keys and the signer, `$MIND_HOME/revoked` and the lock keep the
+// revoked ones -- because a statement is only in the packages that carry it,
+// and whoever holds the old key can serve a package without it. A dependency
+// that names no key is still pinned to its first signer, if it has one: from
+// then on it is held to that key, which is what covers the dependencies of
+// dependencies that nobody listed a key for.
+//
+// **Keys are Ed25519** (`std.crypto`), written `ed25519:` and 64 hex digits,
+// and held here as their 32 bytes. A secret key is a file holding its seed in
+// hex; `mind keygen` makes one, and nothing here prints it.
 //
 // This module is pure. Reading the files is the caller's.
 
@@ -39,9 +53,9 @@ let file_name = "mind.sig";
 
 let algorithm = "ed25519:";
 
-/// What a key signs for a package whose tree hashes to `h`.
-let message : :string -> :string;
-let message h = "mind-release-v1\n" + h + "\n";
+let header = "# Signed statements about this package, one per line. Written by `mind sign`, `rotate` and `revoke`.";
+
+// --- keys ----------------------------------------------------------------------------
 
 /// A key as written, `ed25519:HEX`, to its 32 bytes, or `()` for text that is
 /// not one. Either case of hex reads; it is written lowercase.
@@ -63,61 +77,196 @@ let spell bytes = algorithm + crypto.hex bytes;
 let listed : :any -> [:string];
 let listed v = match v { () => [], s if type_of s == :string => [s], ks => map to_string ks };
 
-/// The `[key, hash, signature]` lines of a signature file. Blank lines and
-/// `#` comments are skipped, and so is a line of the wrong shape: one bad
-/// line must not hide a good one below it.
-let lines : :string -> [[:string]];
-let lines text =
-    list.flat_map (fn line -> match str.words line {
-        [k, h, s] if not (str.starts_with "#" k) => [[k, h, s]],
-        _ => [],
-    }) (str.split "\n" text);
+// --- statements ------------------------------------------------------------------------
 
-/// The line `mind sign` writes.
-let line : :string -> :string -> :string -> :string;
-let line public h signature = spell public + " " + h + " " + crypto.hex signature;
+/// One line of `mind.sig`, keys and signature as bytes.
+union Statement {
+    release(key : :string, name : :string, hash : :string, signature : :string),
+    rotate(old : :string, new : :string, signature : :string),
+    revoke(key : :string, signature : :string),
+}
 
-/// A signature file with `entry` for its key, replacing that key's old line
-/// and keeping every other.
-let with_line : :string -> :string -> :string;
-let with_line text entry = {
-    let [k, .._] = str.words entry;
-    let kept = list.filter (fn l -> match str.words l {
-        [other, .._] => key_bytes other != key_bytes k || str.starts_with "#" other,
-        [] => false,
-    }) (str.split "\n" text);
-    let body = match kept { [] => [header], ks => ks };
-    str.join_str "\n" (list.append body [entry]) + "\n"
+let release_message : :string -> :string -> :string;
+let release_message name h = "mind-release-v2\nrelease " + name + "\nhash " + h + "\n";
+
+let rotate_message : :string -> :string -> :string;
+let rotate_message old new = "mind-rotate-v1\nfrom " + spell old + "\nto " + spell new + "\n";
+
+let revoke_message : :string -> :string;
+let revoke_message key = "mind-revoke-v1\nkey " + spell key + "\n";
+
+/// The statements a seed makes.
+let release : :string -> :string -> :string -> Statement;
+let release seed name h = {
+    let key = crypto.ed25519_public seed;
+    Statement.release key name h (crypto.ed25519_sign seed (release_message name h))
 };
 
-let header = "# Signatures over this package's tree hash, one per key. Written by `mind sign`.";
+let rotate : :string -> :string -> Statement;
+let rotate old_seed new_key = {
+    let old = crypto.ed25519_public old_seed;
+    Statement.rotate old new_key (crypto.ed25519_sign old_seed (rotate_message old new_key))
+};
 
-/// Whether `text` -- a package's signature file, `()` when it has none --
-/// holds a signature of `h` by one of `keys`. `Result.ok key` names the key
-/// that signed; the error says what was wrong, since "unsigned", "signed by
-/// someone else" and "signed, but other bytes" each want a different fix.
-let check : [:string] -> :string -> (:string | :unit) -> Result :string :string;
-let check keys h text = {
-    let bad = list.filter (fn k -> key_bytes k == ()) keys;
-    let trusted = list.map key_bytes keys;
-    let found = match text { () => [], t => lines t };
-    let mine = list.filter (fn [k, _, _] -> list.contains (key_bytes k) trusted) found;
-    let valid [k, lh, s] =
-        lh == h && match crypto.unhex s {
-            () => false,
-            sig => crypto.ed25519_verify (key_bytes k) (message h) sig,
+let revoke : :string -> Statement;
+let revoke seed = {
+    let key = crypto.ed25519_public seed;
+    Statement.revoke key (crypto.ed25519_sign seed (revoke_message key))
+};
+
+/// Whether the statement's signature is its key's.
+let valid : Statement -> :bool;
+let valid s = match s {
+    Statement.release(k, n, h, sig) => crypto.ed25519_verify k (release_message n h) sig,
+    Statement.rotate(old, new, sig) => crypto.ed25519_verify old (rotate_message old new) sig,
+    Statement.revoke(k, sig) => crypto.ed25519_verify k (revoke_message k) sig,
+};
+
+let render : Statement -> :string;
+let render s = match s {
+    Statement.release(k, n, h, sig) => "release " + spell k + " " + n + " " + h + " " + crypto.hex sig,
+    Statement.rotate(old, new, sig) => "rotate " + spell old + " " + spell new + " " + crypto.hex sig,
+    Statement.revoke(k, sig) => "revoke " + spell k + " " + crypto.hex sig,
+};
+
+/// One line read, or none for a comment, a blank, or a line of the wrong
+/// shape -- which is skipped rather than fatal, so that one bad line cannot
+/// hide a good one below it.
+let parse_line : :string -> Option Statement;
+let parse_line line =
+    match str.words line {
+        ["release", k, n, h, s] => match [key_bytes k, crypto.unhex s] {
+            [(), _] => Option.none,
+            [_, ()] => Option.none,
+            [kb, sb] => Option.some (Statement.release kb n h sb),
+        },
+        ["rotate", old, new, s] => match [key_bytes old, key_bytes new, crypto.unhex s] {
+            [(), _, _] => Option.none,
+            [_, (), _] => Option.none,
+            [_, _, ()] => Option.none,
+            [ob, nb, sb] => Option.some (Statement.rotate ob nb sb),
+        },
+        ["revoke", k, s] => match [key_bytes k, crypto.unhex s] {
+            [(), _] => Option.none,
+            [_, ()] => Option.none,
+            [kb, sb] => Option.some (Statement.revoke kb sb),
+        },
+        _ => Option.none,
+    };
+
+/// Every statement in a signature file that its own key signed. One that does
+/// not verify is as good as absent: anyone can write a line.
+let statements : :string -> [Statement];
+let statements text =
+    list.filter valid (list.flat_map (fn l -> match parse_line l { Option.some(s) => [s], Option.none => [] })
+                                     (str.split "\n" text));
+
+/// Two statements are the same slot when a newer one should replace the
+/// older: a key's release, a key's rotation, a key's revocation.
+let slot : Statement -> [:any];
+let slot s = match s {
+    Statement.release(k, _, _, _) => [:release, k],
+    Statement.rotate(old, _, _) => [:rotate, old],
+    Statement.revoke(k, _) => [:revoke, k],
+};
+
+/// A signature file with `s` in it, replacing what filled its slot and keeping
+/// everything else, comments included: signing v1.5 drops this key's v1.4
+/// line and keeps another key's, and a rotation or revocation stays in every
+/// release after it, which is how users who skipped one still hear of it.
+let with_statement : :string -> Statement -> :string;
+let with_statement text s = {
+    let kept = list.filter (fn l -> match parse_line l {
+        Option.some(old) => slot old != slot s,
+        Option.none => not (str.is_empty (str.trim l)),
+    }) (str.split "\n" text);
+    let body = match kept { [] => [header], ks => ks };
+    str.join_str "\n" (list.append body [render s]) + "\n"
+};
+
+// --- deciding --------------------------------------------------------------------------
+
+/// What `decide` is told about one dependency: the keys the project names for
+/// it (`roots`); what the lock remembers -- the key that signed it last and the
+/// keys it has seen retired, `()` and `[]` when the lock says nothing or
+/// trusted other roots; every key known to be revoked; the release it must be
+/// signed as, when it is pinned to a tag; and whether being unsigned is an
+/// error even with no key named. Keys are bytes.
+mapping Policy {
+    roots = []
+    signer = ()
+    retired = []
+    revoked = []
+    release = ()
+    required = false
+}
+
+/// What `decide` answers: the key that signed it (`()` for an unsigned
+/// package nobody required to be signed), the keys retired for it now, and
+/// the revocations it carried, for the caller to remember.
+mapping Verdict {
+    signer = ()
+    retired = []
+    revoked = []
+}
+
+/// A key followed through the rotations it and its successors made. A cycle
+/// stops where it would repeat.
+let latest : [[:string]] -> :string -> :string;
+let latest rotations key = {
+    let rec go k seen =
+        match list.filter (fn pair -> list.head pair == k) rotations {
+            [[_, next], .._] if not (list.contains next seen) => go next (list.cons next seen),
+            _ => k,
         };
-    let trusting = "its entry trusts " + str.join_str ", " keys;
-    match [bad, text, mine, list.filter valid mine] {
-        [[b, .._], _, _, _] => Result.error ("`keys` holds `" + b + "`, which is not an ed25519: key"),
-        [_, _, _, [[k, _, _], .._]] => Result.ok k,
-        [_, (), _, _] => Result.error ("is not signed (it has no " + file_name + "), but " + trusting),
-        [_, _, [], _] => Result.error ("is not signed by a key " + trusting
-                                       + (if list.is_empty found { "" }
-                                          else { " (it is signed by " + str.join_str ", " (map list.head found) + ")" })),
-        [_, _, [[_, lh, _], .._], _] if lh != h =>
-            Result.error ("is signed as " + lh + ", but what arrived hashes to " + h),
-        _ => Result.error ("has a signature that does not verify -- it was altered, or made by another key"),
+    go key [key]
+};
+
+let spelled keys = str.join_str ", " (list.map spell keys);
+
+/// Whether a package that hashes to `h` and carries `text` (its signature
+/// file, `()` for none) may be used under `p`. The error says which way it
+/// failed, since "unsigned", "someone else's", "other bytes" and "another
+/// release" each want a different fix.
+let decide : Policy -> :string -> (:string | :unit) -> Result Verdict :string;
+let decide p h text = {
+    let ss = match text { () => [], t => statements t };
+    let rotations = list.flat_map (fn s -> match s { Statement.rotate(old, new, _) => [[old, new]], _ => [] }) ss;
+    let revocations = list.flat_map (fn s -> match s { Statement.revoke(k, _) => [k], _ => [] }) ss;
+    let releases = list.flat_map (fn s -> match s { Statement.release(k, n, lh, _) => [[k, n, lh]], _ => [] }) ss;
+    let revoked = list.unique (list.append (Policy.revoked p) revocations);
+    let retired = list.unique (list.append (Policy.retired p) (list.map list.head rotations));
+    let starts = list.append (Policy.roots p) (match Policy.signer p { () => [], s => [s] });
+    let usable k = not (list.contains k revoked) && not (list.contains k retired);
+    let trusted = list.filter usable (list.unique (list.map (latest rotations) starts));
+    let as_wanted n = match Policy.release p { () => true, w => n == w };
+    let answer signer = Result.ok (Verdict.make signer retired revocations);
+    let by_trusted = list.filter (fn r -> list.contains (list.head r) trusted) releases;
+    let fits = list.filter (fn r -> list.nth 2 r == h && as_wanted (list.nth 1 r)) by_trusted;
+    match [starts, trusted, fits] {
+        // Nobody named a key and the lock has none: the first signer, if there
+        // is one, becomes the one to hold it to.
+        [[], _, _] => match list.filter (fn r -> list.nth 2 r == h && as_wanted (list.nth 1 r)
+                                                 && not (list.contains (list.head r) revoked)) releases {
+            [[k, _, _], .._] => answer k,
+            _ => if Policy.required p {
+                Result.error ("is not signed by a key this project trusts, and [fetch] require-signatures is set: "
+                              + "name its author's key in its entry or in [trust]")
+            } else { answer () },
+        },
+        [_, [], _] => Result.error ("may only be signed by " + spelled (list.unique starts)
+                                    + ", and every one of them has been revoked or rotated away"),
+        [_, _, [[k, _, _], .._]] => answer k,
+        _ => match [text, by_trusted, list.filter (fn r -> list.nth 2 r == h) by_trusted] {
+            [(), _, _] => Result.error ("is not signed (it has no " + file_name + "), but must be by " + spelled trusted),
+            [_, [], _] => Result.error ("is not signed by " + spelled trusted
+                                        + (if list.is_empty releases { "" }
+                                           else { " (it is signed by " + spelled (list.unique (list.map list.head releases)) + ")" })),
+            [_, _, [[_, n, _], .._]] => Result.error ("is signed as release " + n + ", not " + to_string (Policy.release p)
+                                                      + " -- an older release served in place of the one asked for?"),
+            [_, [[_, _, lh], .._], _] => Result.error ("is signed as " + lh + ", but what arrived hashes to " + h),
+            _ => Result.error "is not signed as it must be",
+        },
     }
 };
 
@@ -126,37 +275,66 @@ when test {
 
     let seed = crypto.unhex "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb";
     let other = crypto.unhex "c5aa8df43f9f837bedb7442f31dcb7b166d38535076f094b85ce3a2e0b4458f7";
+    let third = crypto.unhex "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60";
     let pub = crypto.ed25519_public seed;
+    let pub2 = crypto.ed25519_public other;
+    let pub3 = crypto.ed25519_public third;
     let h = "sha256:" + str.repeat 64 "a";
-    let signed = with_line "" (line pub h (crypto.ed25519_sign seed (message h)));
-    let error_of r = match r { Result.error(why) => why, Result.ok(k) => "ok " + k };
+    let file ss = list.fold (fn t s -> with_statement t s) "" ss;
+    let signed = file [release seed "v1" h];
+    let trusting keys = Policy.set_roots keys (Policy.new ());
+    let error_of r = match r { Result.error(why) => why, Result.ok(_) => "ok" };
+    let says text r = str.find text (error_of r) >= 0;
+    let signer_of r = match r { Result.ok(v) => Verdict.signer v, _ => :refused };
 
     let tests = [
         test.case "a key is ed25519: and 32 bytes of hex"
             $( test.eq! [pub, pub, (), (), ()]
-                        [key_bytes (spell pub), key_bytes ("ed25519:" + str.upper (crypto.hex pub)), key_bytes "ed25519:abcd",
-                         key_bytes ("rsa:" + crypto.hex pub), key_bytes ("ed25519:" + str.repeat 64 "z")] ),
+                        [key_bytes (spell pub), key_bytes ("ed25519:" + str.upper (crypto.hex pub)),
+                         key_bytes "ed25519:abcd", key_bytes ("rsa:" + crypto.hex pub),
+                         key_bytes ("ed25519:" + str.repeat 64 "z")] ),
         test.case "keys may be one or several"
             $( test.eq! [["a"], ["a", "b"], []] [listed "a", listed ["a", "b"], listed ()] ),
+        test.case "every statement reads back as written, and verifies"
+            $( test.eq! 3 (list.length (statements (file [release seed "v1" h, rotate seed pub2, revoke other]))) ),
+        test.case "a statement whose signature is not its key's is as good as absent"
+            $( test.eq! [] (statements (str.replace (spell pub) (spell pub2) signed)) ),
         test.case "a trusted signature over the hash passes, and names its key"
-            $( test.eq! (Result.ok (spell pub)) (check [spell pub] h signed) ),
+            $( test.eq! pub (signer_of (decide (trusting [pub]) h signed)) ),
         test.case "no signature file is said to be"
-            $( test.eq! true (str.find "has no mind.sig" (error_of (check [spell pub] h ())) >= 0) ),
+            $( test.eq! true (says "has no mind.sig" (decide (trusting [pub]) h ())) ),
         test.case "a signature by someone else is said to be"
-            $( test.eq! true (str.find "not signed by a key"
-                                       (error_of (check [spell (crypto.ed25519_public other)] h signed)) >= 0) ),
+            $( test.eq! true (says "is not signed by" (decide (trusting [pub2]) h signed)) ),
         test.case "other bytes than were signed are said to be"
-            $( test.eq! true (str.find "hashes to" (error_of (check [spell pub] ("sha256:" + str.repeat 64 "b") signed)) >= 0) ),
-        test.case "a signature over the hash, but not this message, fails"
-            $( test.eq! true (str.find "does not verify"
-                                       (error_of (check [spell pub] h (with_line "" (line pub h (crypto.ed25519_sign seed h)))))
-                              >= 0) ),
-        test.case "a key that is not one is reported, not ignored"
-            $( test.eq! true (str.find "not an ed25519" (error_of (check ["ed25519:xyz"] h signed)) >= 0) ),
+            $( test.eq! true (says "hashes to" (decide (trusting [pub]) ("sha256:" + str.repeat 64 "b") signed)) ),
+        test.case "a release signed as another is refused for the one asked for"
+            $( test.eq! true (says "an older release" (decide (Policy.set_release "v2" (trusting [pub])) h signed)) ),
+        test.case "and accepted for itself"
+            $( test.eq! pub (signer_of (decide (Policy.set_release "v1" (trusting [pub])) h signed)) ),
+        test.case "a rotation hands trust from the old key to the new"
+            $( test.eq! pub2 (signer_of (decide (trusting [pub]) h (file [rotate seed pub2, release other "v1" h]))) ),
+        test.case "and retires the old key, even for its own signature"
+            $( test.eq! true (says "is not signed by" (decide (trusting [pub]) h (file [rotate seed pub2, release seed "v1" h]))) ),
+        test.case "a retired key the lock remembers stays retired without the rotation"
+            $( test.eq! true (says "revoked or rotated away"
+                                   (decide (Policy.set_retired [pub] (trusting [pub])) h signed)) ),
+        test.case "rotations are followed through"
+            $( test.eq! pub3 (signer_of (decide (trusting [pub])
+                                                h (file [rotate seed pub2, rotate other pub3, release third "v1" h]))) ),
+        test.case "a revoked key is refused, and says why"
+            $( test.eq! true (says "revoked or rotated away" (decide (trusting [pub]) h (file [release seed "v1" h, revoke seed]))) ),
+        test.case "a revocation is reported for remembering"
+            $( test.eq! [pub2] (match decide (trusting [pub]) h (file [release seed "v1" h, revoke other]) {
+                   Result.ok(v) => Verdict.revoked v, _ => [] }) ),
+        test.case "a package nobody named a key for is pinned to its first signer"
+            $( test.eq! pub (signer_of (decide (Policy.new ()) h signed)) ),
+        test.case "and an unsigned one passes, unless signatures are required"
+            $( test.eq! [(), :refused] [signer_of (decide (Policy.new ()) h ()),
+                                        signer_of (decide (Policy.set_required true (Policy.new ())) h ())] ),
         test.case "signing again replaces that key's line and keeps the others"
-            $( test.eq! 3 (list.length (str.split "\n" (str.trim (with_line (with_line signed (spell (crypto.ed25519_public other) + " x y"))
-                                                                          (line pub h "z"))))) ),
+            $( test.eq! 4 (list.length (str.split "\n" (str.trim (file [release seed "v1" h, release other "v1" h,
+                                                                        rotate seed pub3, release seed "v2" h])))) ),
         test.case "a line of the wrong shape does not hide the next"
-            $( test.eq! (Result.ok (spell pub)) (check [spell pub] h ("junk\n" + signed)) ),
+            $( test.eq! pub (signer_of (decide (trusting [pub]) h ("junk line\n" + signed))) ),
     ];
 }

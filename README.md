@@ -118,11 +118,13 @@ Given twice, the second is relative to the first.
 | `mind add SOURCE` | add a dependency: a directory, a git URL, or a tarball |
 | `mind remove NAME` | take one out again |
 | `mind fetch` | download dependencies without building |
-| `mind update [NAME]` | fetch git and URL dependencies again |
+| `mind update [NAME]` | fetch git and URL dependencies again; `--allow-downgrade` takes an older version |
 | `mind verify` | hash every fetched dependency again and hold it to `mind.lock` |
 | `mind mirror DIR` | write every fetched dependency into `DIR`, as a mirror serves it |
 | `mind keygen` | make a key to sign releases with, and print its public half |
-| `mind sign` | sign this package's last commit into `mind.sig` |
+| `mind sign [RELEASE]` | sign this package's last commit as `RELEASE` into `mind.sig` |
+| `mind rotate ed25519:NEW` | hand this key's trust to another |
+| `mind revoke [CERT]` | publish this key's revocation in `mind.sig` |
 | `mind deps`, `mind tree` | every package the project resolves to, as a list or as who needs what |
 | `mind info` | what this build would run, without running it |
 | `mind options` | every package's options, and what this build sets them to |
@@ -253,35 +255,68 @@ the sources and nothing else, since moving the lock is the point of it.
 A hash protects a version already locked. A signature protects the one you
 are about to fetch: a dependency that lists `keys` is used only when it
 carries a signature by one of them over the bytes that arrived, however they
-arrived -- the source, the cache or a mirror.
+arrived -- the source, the cache or a mirror -- and it is checked before
+anything it depends on is fetched.
 
 ```toml
 [dependencies]
 json = { git = "https://github.com/u/json", tag = "v1.4", keys = ["ed25519:3d40..."] }
+
+[trust]                         # keys for dependencies at any depth, by key
+yaml = ["ed25519:77ab..."]
+
+[fetch]
+require-signatures = true       # refuse what no trusted key signed
 ```
 
-`mind add URL --tag v1.4 --key ed25519:...` writes that, and refuses a release
-the key did not sign. Keys are Ed25519 (`std.crypto`).
+`mind add URL --tag v1.4 --key ed25519:...` writes the first line, and refuses
+a release the key did not sign. Keys are Ed25519 (`std.crypto`).
 
 For an author:
 
 ```
-mind keygen            # once: $MIND_HOME/signing.key, readable by you alone
-mind sign              # for each release: signs the last commit into mind.sig
+mind keygen            # once: $MIND_HOME/signing.key, readable by you alone,
+                       # and signing.key.revoke, its revocation -- keep it apart
+mind sign v1.4         # each release: signs the last commit as v1.4 into mind.sig
 git add mind.sig && git commit -m "Sign v1.4" && git tag v1.4
 ```
 
-What is signed is the tree hash the lock records, and `mind.sig` is left out
-of it, so committing the signature changes nothing it signs. In a git
-repository `mind sign` hashes a clone of the last commit -- exactly what a
-fetch checks out -- and says so if there are uncommitted changes it left out;
-anywhere else it signs the directory as it stands, which is then what to pack.
-Signing again replaces that key's line and keeps any other key's, so a release
-can carry several signatures. `--signing-key FILE` uses another key.
+What is signed is the tree hash the lock records and the release's name, and
+`mind.sig` is left out of the hash, so committing the signature changes
+nothing it signs. In a git repository `mind sign` hashes a clone of the last
+commit -- exactly what a fetch checks out -- and says so if there are
+uncommitted changes it left out; anywhere else it signs the directory as it
+stands, which is then what to pack. With no name it signs as `v` and the
+manifest's version.
 
-A signature says who made the bytes, not which release they are. The bytes
-include `mind.toml`, so a `version` requirement in the entry is what refuses an
-older signed release served in place of the one you asked for.
+What it protects against:
+
+- **Someone else's bytes.** A release no trusted key signed, or bytes other
+  than the ones signed, is refused, and the error says which.
+- **An old release in place of a new one.** A dependency pinned to a tag must
+  be signed *as* that tag, so `v1.0`'s signature does not pass for `v1.4`.
+  And `mind update` refuses to take an older version from the same source --
+  a branch or URL moved backwards -- unless given `--allow-downgrade`.
+- **Dependencies nobody named a key for.** The lock records who signed each
+  package (`signer`) the first time it is seen signed, and from then on it is
+  held to that key: a later version unsigned, or signed by someone else, is
+  refused, at any depth. `[trust]` names keys up front instead.
+- **Rotation.** `mind rotate ed25519:NEW` writes the old key's handover into
+  `mind.sig`; sign the release with the new key. Users who trusted the old
+  key now trust the new one, and the lock records the old one as `retired`,
+  so a release later signed by the old key alone is refused -- what a stolen
+  retired key would produce.
+- **Revocation.** `mind revoke` publishes the certificate `keygen` wrote,
+  which needs no key, so a lost or stolen key can still be revoked. Release
+  it signed by another key your users trust. A project that sees it records
+  the key under `[revoked]` in its lock and in `$MIND_HOME/revoked`, and every
+  project on the machine refuses that key from then on.
+
+What the lock remembers counts while the dependency comes from the same
+repository and the project names the same keys; pointing it elsewhere or
+naming other keys is choosing to trust anew. The keys you trust are worth
+having two of -- one kept offline -- so that a revoked key leaves a trusted
+one standing.
 
 ### Cycles
 

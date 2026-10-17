@@ -145,6 +145,16 @@ let mirrors m =
             v => match type_of v { :list => v, _ => [v] },
         });
 
+/// Keys trusted for dependencies wherever they are in the graph, by the key
+/// they are imported as: `[trust] json = ["ed25519:.."]`. This is how a
+/// project vouches for the dependencies of its dependencies, whose entries it
+/// does not write.
+let trust m = toml.section (doc m) "trust";
+
+/// `[fetch] require-signatures = true`: refuse a fetched dependency that no
+/// trusted key has signed, rather than take it unsigned.
+let require_signatures m = toml.get false (doc m) "fetch" "require-signatures" == true;
+
 // --- `[payload]`: files carried in the image ---------------------------------
 //
 // `[payload]` maps a name to a file, relative to the manifest:

@@ -34,6 +34,7 @@ import std.path;
 import std.proc;
 import std.str;
 import std.toml;
+import std.version;
 import std.vm;
 
 import pack.commands;
@@ -101,11 +102,14 @@ let command_spec = [
     cli.command "add"   "add a dependency: a directory, a git URL, or a tarball" [],
     cli.command "remove" "remove a dependency by name" [],
     cli.command "fetch" "download dependencies without building" [],
-    cli.command "update" "fetch branch- and url-pinned dependencies again" [],
+    cli.command "update" "fetch branch- and url-pinned dependencies again"
+        [cli.flag "" "allow-downgrade" "take an older version from the same source"],
     cli.command "verify" "hash every fetched dependency again and check it against mind.lock" [],
     cli.command "mirror" "write every fetched dependency into DIR, for $MIND_MIRRORS" [],
     cli.command "keygen" "make a key to sign releases with, and print its public half" [],
-    cli.command "sign" "sign this package's last commit into mind.sig" [],
+    cli.command "sign" "sign this package's last commit as RELEASE (default: v and its version) into mind.sig" [],
+    cli.command "rotate" "hand this key's trust to a new one: rotate ed25519:NEW" [],
+    cli.command "revoke" "publish this key's revocation in mind.sig: revoke [CERTIFICATE]" [],
     cli.command "deps"  "list every package this project resolves to" [],
     cli.command "tree"  "show the dependency tree" [],
     cli.command "info"  "show what this build would run, without running it" [],
@@ -164,7 +168,21 @@ signed is used, however it arrived:
   json = { git = \"https://github.com/u/json\", tag = \"v1.4\", keys = [\"ed25519:3d40..\"] }
 
 `mind add --key ed25519:..` writes that. An author runs `mind keygen` once and
-`mind sign` for each release, then commits mind.sig and tags.
+`mind sign v1.4` for each release, then commits mind.sig and tags v1.4. A tag
+must be signed as itself, so an old release cannot stand in for a new one.
+
+A package nobody names a key for is still held to whoever signed it first,
+and [trust] names keys for dependencies at any depth:
+
+  [trust]
+  json = [\"ed25519:3d40..\"]
+
+  [fetch]
+  require-signatures = true       # refuse anything no trusted key signed
+
+`mind rotate ed25519:NEW` hands a key's trust to another; `mind revoke`
+publishes the revocation certificate `keygen` wrote, and every project that
+sees it refuses that key from then on.
 
 `[build]` is only for how *this* package is compiled, and every key has a
 command-line spelling that wins over it:
@@ -710,10 +728,10 @@ let cmd_verify! m o = {
     let ns = fetched (graph_of! m o);
     let changed = list.filter (fn n -> fetch.tree_hash! (build.node_dir n)
                                   != fetch.hash! (build.node_dep n) (build.node_dir n)) ns;
-    let signed = list.length (list.filter (fn n -> manifest.spec_get (build.node_dep n) "keys" != ()) ns);
+    let signed = list.length (list.filter (fn n -> build.node_signer n != ()) ns);
     match changed {
         [] => console.print! ("verified " + to_string (list.length ns) + " fetched packages against mind.lock"
-                              + (if signed == 0 { "" } else { ", " + to_string signed + " of them signed by a key they trust" })),
+                              + (if signed == 0 { "" } else { ", " + to_string signed + " of them signed" })),
         _ => fail! ("these packages' files are not what was fetched:\n"
                     + str.join_str "\n" (map (fn n -> "  " + describe n + "  (" + build.node_dir n + ")") changed)
                     + "\n`mind update NAME` fetches each again"),
@@ -764,8 +782,15 @@ let cmd_keygen! c = {
     io.chmod! at 384
     let seed = crypto.random_bytes! 32;
     file.write! at (crypto.hex seed + "\n")
+    // The revocation is made now, while there is a key to make it with: a
+    // key that is lost can still be revoked, as long as this is not.
+    let cert = at + ".revoke";
+    file.write! cert ""
+    io.chmod! cert 384
+    file.write! cert (sign.render (sign.revoke seed) + "\n")
     let public = sign.spell (crypto.ed25519_public seed);
     console.print! ("wrote a signing key to " + at + " -- keep it, and keep it to yourself")
+    console.print! ("and its revocation to " + cert + " -- keep that somewhere else; `mind revoke` publishes it")
     console.print! ("its public key, for the manifests of those who use your releases:\n  " + public)
 };
 
@@ -787,9 +812,20 @@ let signing_seed! c = {
 /// left out. Anywhere else it is the directory as it stands, which is then
 /// what to pack. The signature is written into `mind.sig`, replacing this
 /// key's line from an earlier release and keeping any other key's.
-let cmd_sign! m c = {
+let cmd_sign! m c args = {
     let root = manifest.root m;
     let seed = signing_seed! c;
+    let release = match args {
+        [] => match version.parse (to_string (manifest.version m)) {
+            Result.ok(v) => version.tag v,
+            Result.error(why) => fail! ("give the release to sign as, such as `mind sign v1.4`: " + why),
+        },
+        [name] => name,
+        _ => fail! "sign takes one release name, the tag it will be released as",
+    };
+    if not (list.is_empty (str.words release)) && list.length (str.words release) != 1 {
+        fail! ("a release name has no spaces: `" + release + "`")
+    }
     let in_git = io.exists! (path.join root ".git");
     let h = match in_git {
         false => fetch.tree_hash! root,
@@ -818,12 +854,61 @@ let cmd_sign! m c = {
         }
     }
     let public = crypto.ed25519_public seed;
-    let at = path.join root sign.file_name;
-    let before = match file.read! at { () => "", t => t };
-    file.write! at (sign.with_line before (sign.line public h (crypto.ed25519_sign seed (sign.message h))))
-    console.print! ("signed " + h + " as " + sign.spell public)
-    console.print! (if in_git { "commit " + sign.file_name + " -- it is not part of what it signs -- and tag the release" }
+    add_statement! root (sign.release seed release h)
+    console.print! ("signed " + h + " as release " + release + " by " + sign.spell public)
+    console.print! (if in_git { "commit " + sign.file_name + " -- it is not part of what it signs -- and tag it " + release }
                     else { "pack this directory as it stands, " + sign.file_name + " with it" })
+};
+
+/// Put a statement into this package's `mind.sig`. The file is read, and the
+/// read forced, before it is written: handed to `write!` unforced, the read
+/// would happen after the write had already emptied the file.
+let add_statement! root s = {
+    let at = path.join root sign.file_name;
+    let text = sign.with_statement (match file.read! at { () => "", t => t }) s;
+    strict! text
+    file.write! at text
+};
+
+/// Hand this key's trust to another. Everyone who trusts this key trusts the
+/// new one from the next release that carries the statement, and stops
+/// trusting this one: a rotation is also a retirement, and a lock that has
+/// seen it remembers it. The new key's secret is not needed, only its name.
+let cmd_rotate! m c args = {
+    let seed = signing_seed! c;
+    let next = match args {
+        [k] => match sign.key_bytes k {
+            () => fail! ("`" + k + "` is not a key: one is ed25519: and 64 hex digits"),
+            b => b,
+        },
+        _ => fail! "rotate needs the new key: mind rotate ed25519:..",
+    };
+    if next == crypto.ed25519_public seed { fail! "that is this key; rotate to a new one" }
+    add_statement! (manifest.root m) (sign.rotate seed next)
+    console.print! ("wrote the rotation from " + sign.spell (crypto.ed25519_public seed) + " to " + sign.spell next
+                    + " into " + sign.file_name)
+    console.print! "sign this release with the new key (mind sign --signing-key NEW), then commit and tag"
+};
+
+/// Publish a key's revocation: the certificate `keygen` wrote beside it, or
+/// one named. It needs no key to publish, which is the point -- a key that
+/// was lost or stolen can still be revoked -- and it is checked before it is
+/// written, since a statement that does not verify would only be ignored.
+let cmd_revoke! m c args = {
+    let cert = match args { [f] => f, [] => signing_key_path! c + ".revoke", _ => fail! "revoke takes one certificate" };
+    let found = match file.read! cert {
+        () => fail! ("no revocation certificate at " + cert),
+        text => list.filter (fn s -> match s { sign.Statement.revoke(_, _) => true, _ => false }) (sign.statements text),
+    };
+    match found {
+        [s, .._] => {
+            add_statement! (manifest.root m) s
+            let key = match s { sign.Statement.revoke(k, _) => sign.spell k, _ => "" };
+            console.print! ("wrote the revocation of " + key + " into " + sign.file_name)
+            console.print! "release it signed by a key your users also trust, so it reaches them"
+        },
+        [] => fail! (cert + " holds no revocation that verifies"),
+    }
 };
 
 // --- adding and removing -------------------------------------------------------
@@ -889,6 +974,10 @@ let cmd_add! m c args = {
     match fetch.resolve! (manifest.root m) probe () [] {
         Result.error(why) => fail! why,
         Result.ok(dir) => {
+            match build.trust! (build.trust_context! m) probe dir {
+                Result.error(why) => fail! (source + " " + why),
+                _ => (),
+            }
             let key = add_name! source dir c;
             let manifest_file = path.join (manifest.root m) "mind.toml";
             let text = match file.read! manifest_file { () => "", t => t };
@@ -1037,7 +1126,8 @@ let options_of! c =
                [:targets,  cli.all c "target"],
                [:vm,       if cli.flag_set c "precompile" { ["--precompile"] } else { [] }],
                [:verbose,  cli.flag_set c "verbose"],
-               [:jobs,     jobs_of! c]];
+               [:jobs,     jobs_of! c],
+               [:allow_downgrade, cli.flag_set c "allow-downgrade"]];
 
 let run_command! c theirs = {
     let o = options_of! c;
@@ -1078,7 +1168,9 @@ let run_command! c theirs = {
                   "verify" => cmd_verify! (project! ()) o,
                   "mirror" => cmd_mirror! (project! ()) o (cli.rest c),
                   "keygen" => cmd_keygen! c,
-                  "sign" => cmd_sign! (project! ()) c,
+                  "sign" => cmd_sign! (project! ()) c (cli.rest c),
+                  "rotate" => cmd_rotate! (project! ()) c (cli.rest c),
+                  "revoke" => cmd_revoke! (project! ()) c (cli.rest c),
                   "add"   => cmd_add! (project! ()) c (cli.rest c),
                   "remove" => cmd_remove! (project! ()) (cli.rest c),
                   "clean" => cmd_clean! (project! ()),

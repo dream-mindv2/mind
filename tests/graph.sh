@@ -159,7 +159,7 @@ case "$out" in *"already holds a key"*) echo "ok   a key is never replaced"; pas
 
 mkdir -p "$tmp/srepo" && (cd "$tmp/srepo" && git init -q && printf '[package]\nname = "signed"\nversion = "1.0.0"\n' >mind.toml \
     && echo 'let v = 1;' >lib.dr && git add . && git_c commit -qm one)
-(cd "$tmp/srepo" && "$dream" "$mind" sign --signing-key "$author" >/dev/null && git add mind.sig \
+(cd "$tmp/srepo" && "$dream" "$mind" sign v1 --signing-key "$author" >/dev/null && git add mind.sig \
     && git_c commit -qm sign && git tag v1 \
     && echo 'let w = 2;' >>lib.dr && git_c commit -qam unsigned && git tag v2 \
     && git rm -q mind.sig && git_c commit -qm nosig && git tag v3)
@@ -167,9 +167,9 @@ surl="file://$tmp/srepo"
 
 pkg sig/app 0.1.0 "[dependencies]\ns = { git = \"$surl\", tag = \"v1\", keys = [\"$public\"] }\n"
 check "a release signed by a trusted key is used" sig 0 "s v1.0.0 (package"
-check "and verify says so" sig 0 "1 of them signed by a key they trust" verify
+check "and verify says so" sig 0 "1 of them signed" verify
 pkg wrong/app 0.1.0 "[dependencies]\ns = { git = \"$surl\", tag = \"v1\", keys = [\"$other\"] }\n"
-check "a release signed by another key is refused" wrong 1 "is not signed by a key its entry trusts"
+check "a release signed by another key is refused" wrong 1 "is not signed by ed25519:"
 pkg moved/app 0.1.0 "[dependencies]\ns = { git = \"$surl\", tag = \"v2\", keys = [\"$public\"] }\n"
 check "a commit after the signature is refused" moved 1 "but what arrived hashes to"
 pkg bare/app 0.1.0 "[dependencies]\ns = { git = \"$surl\", tag = \"v3\", keys = [\"$public\"] }\n"
@@ -184,9 +184,72 @@ check "a signed release goes into a mirror" sig 0 "wrote 1 packages" "mirror $tm
 mv "$tmp/srepo" "$tmp/srepo.gone"
 rm -rf "$tmp/home/cache"
 export MIND_MIRRORS="$tmp/smirror"
-check "and comes back out of it still signed" sig 0 "1 of them signed by a key they trust" verify
+check "and comes back out of it still signed" sig 0 "1 of them signed" verify
 unset MIND_MIRRORS
 mv "$tmp/srepo.gone" "$tmp/srepo"
+
+# A tag must be signed as itself: v1's signature does not make v4 of the same
+# bytes, which is what an old release served under a new tag looks like.
+(cd "$tmp/srepo" && git tag v4 v1)
+pkg old/app 0.1.0 "[dependencies]\ns = { git = \"$surl\", tag = \"v4\", keys = [\"$public\"] }\n"
+check "an old release under a new tag is refused" old 1 "an older release served in place"
+
+# Rotation. The author hands the key's trust to a second key; a user who
+# trusts the first takes the second's release, and the lock remembers the
+# first as retired -- so a release signed by it, without the rotation in it,
+# is refused, which is what a stolen old key would produce.
+(cd "$tmp/srepo" && "$dream" "$mind" rotate "$other" --signing-key "$author" >/dev/null \
+    && "$dream" "$mind" sign v5 --signing-key "$tmp/other.key" >/dev/null \
+    && git add mind.sig && git_c commit -qm rotate && git tag v5)
+pkg rot/app 0.1.0 "[dependencies]\ns = { git = \"$surl\", tag = \"v5\", keys = [\"$public\"] }\n"
+check "a rotated key's successor is trusted" rot 0 "s v1.0.0 (package"
+has "and the lock remembers the old key as retired" "retired = \\[\"$public\"\\]" "$tmp/rot/app/mind.lock"
+(cd "$tmp/srepo" && git rm -q mind.sig && git_c commit -qm strip \
+    && "$dream" "$mind" sign v6 --signing-key "$author" >/dev/null && git add mind.sig && git_c commit -qm v6 && git tag v6)
+pkg rot/app 0.1.0 "[dependencies]\ns = { git = \"$surl\", tag = \"v6\", keys = [\"$public\"] }\n"
+check "a retired key stays retired, rotation statement or not" rot 1 "is not signed by ed25519:"
+
+# Revocation, from the certificate keygen wrote, published in a release
+# signed by the key that is still good. Every project on the machine then
+# refuses the revoked key, including one that has trusted it all along.
+(cd "$tmp/srepo" && "$dream" "$mind" revoke --signing-key "$author" >/dev/null \
+    && "$dream" "$mind" sign v7 --signing-key "$tmp/other.key" >/dev/null \
+    && git add mind.sig && git_c commit -qm revoke && git tag v7)
+pkg rot/app 0.1.0 "[dependencies]\ns = { git = \"$surl\", tag = \"v7\", keys = [\"$public\"] }\n"
+check "a release carrying a revocation is used" rot 0 "s v1.0.0 (package"
+has "and the lock keeps the revocation" '^\[revoked\]' "$tmp/rot/app/mind.lock"
+has "and so does the machine" "$public" "$tmp/home/revoked"
+check "a project that trusted the revoked key now refuses it" sig 1 "has been revoked or rotated away"
+
+# A dependency of a dependency, which nobody named a key for: held to its
+# first signer anyway. Then [trust] names a key for it from the root, and
+# require-signatures refuses what nobody signed.
+third=$(cd "$tmp/keyapp" && "$dream" "$mind" keygen --signing-key "$tmp/third.key" | tail -1 | tr -d ' ')
+mkdir -p "$tmp/trepo" && (cd "$tmp/trepo" && git init -q -b main && printf '[package]\nname = "t"\nversion = "1.0.0"\n' >mind.toml \
+    && echo 'let v = 1;' >lib.dr && git add . && git_c commit -qm one \
+    && "$dream" "$mind" sign v1 --signing-key "$tmp/other.key" >/dev/null && git add mind.sig && git_c commit -qm sign)
+pkg tofu/mid 1.0.0 "[dependencies]\nt = { git = \"file://$tmp/trepo\", branch = \"main\" }\n"
+pkg tofu/app 0.1.0 '[dependencies]\nmid = "../mid"\n'
+check "a transitive dependency is pinned to its first signer" tofu 0 "t v1.0.0"
+has "in the lock" "signer = \"$other\"" "$tmp/tofu/app/mind.lock"
+pkg vouch/mid 1.0.0 "[dependencies]\nt = { git = \"file://$tmp/trepo\", branch = \"main\" }\n"
+pkg vouch/app 0.1.0 "[dependencies]\nmid = \"../mid\"\n\n[trust]\nt = [\"$third\"]\n"
+check "[trust] holds a transitive dependency to a key" vouch 1 "is not signed by ed25519:"
+(cd "$tmp/trepo" && git rm -q mind.sig && echo 'let planted = 1;' >>lib.dr && git_c commit -qam unsigned)
+check "an update that drops the signature is refused" tofu 1 "but must be by" update
+pkg strict/app 0.1.0 "[dependencies]\ns = { git = \"$surl\", tag = \"v3\" }\n\n[fetch]\nrequire-signatures = true\n"
+check "require-signatures refuses what nobody signed" strict 1 "require-signatures is set"
+
+# A branch that goes back to an older release under `mind update`.
+mkdir -p "$tmp/drepo" && (cd "$tmp/drepo" && git init -q -b main && printf '[package]\nname = "d"\nversion = "1.0.0"\n' >mind.toml \
+    && echo 'let v = 1;' >lib.dr && git add . && git_c commit -qm one \
+    && printf '[package]\nname = "d"\nversion = "1.1.0"\n' >mind.toml && git_c commit -qam two)
+pkg down/app 0.1.0 "[dependencies]\nd = { git = \"file://$tmp/drepo\", branch = \"main\" }\n"
+check "a branch is locked at its version" down 0 "d v1.1.0"
+(cd "$tmp/drepo" && git reset -q --hard HEAD~1)
+check "an update that goes back a version is refused" down 1 "would go back to an older version" update
+check "unless it is allowed" down 0 "updated d" "update --allow-downgrade"
+check "and the lock follows" down 0 "d v1.0.0"
 
 echo
 echo "$pass graph cases passed, $fail failed"

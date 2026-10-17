@@ -26,6 +26,7 @@ import fetch;
 import lock;
 import manifest;
 import script;
+import sign;
 import util;
 import std.map;
 
@@ -104,10 +105,15 @@ let with_build_graph key sub g = g.[:builds => (g.[:builds else (%{})]).[key => 
 
 /// An empty graph that reads options as `g` does: a build script's packages
 /// are a program of their own, but one package has one set of options per
-/// build, whichever program it is compiled into. What the lock pins, and the
-/// mirrors to ask, are the build's too.
-let inherit g = empty_graph.[:assumed => g.[:assumed else (%{})]].[:settings => g.[:settings else (%{})]]
-                    .[:pinned => g.[:pinned else (%{})]].[:mirrors => g.[:mirrors else []]];
+/// build, whichever program it is compiled into. What the lock pins and
+/// trusts, the mirrors to ask and the keys known revoked are the build's too.
+let inherit g =
+    fold (fn sub k -> match g.[k else ()] { () => sub, v => sub.[k => v] })
+         (empty_graph.[:assumed => g.[:assumed else (%{})]].[:settings => g.[:settings else (%{})]])
+         trust_keys;
+
+/// What a walk carries from `resolve!` to every fetch and every trust check.
+let trust_keys = [:pinned, :mirrors, :locked, :revoked, :trust, :required];
 
 /// A node: the key, where it is, its manifest (`()` for a bare directory),
 /// the dependency as written, who asked for it first, and every version
@@ -129,6 +135,12 @@ let node_at n = n.[:at else "mind.toml"];
 /// The version the package says it is, or `()` for a directory with no
 /// manifest, which says nothing.
 let node_version n = match node_manifest n { () => (), m => manifest.version m };
+/// What sign.dr decided about it, and the keys the project named for it,
+/// spelled and sorted.
+let node_verdict n = n.[:verdict else (sign.Verdict.new ())];
+let node_roots n = n.[:roots else []];
+/// The key that signed it, spelled, or `()`.
+let node_signer n = match sign.Verdict.signer (node_verdict n) { () => (), s => sign.spell s };
 
 /// Record one more requirement on a node already in the graph.
 let with_want key want g = match [want, node g key] {
@@ -232,9 +244,18 @@ let rec walk! owner owner_key deps kind path g =
 let follow! owner owner_key d rest kind trail g = {
     let key = manifest.dep_name d;
     let pinned = (g.[:pinned else (%{})]).[manifest.dep_source d else ()];
-    match fetch.resolve! (manifest.root owner) d pinned (g.[:mirrors else []]) {
+    // Checked before anything below it is read or fetched: a package that is
+    // not who it should be does not get to name what is fetched next.
+    let found = match fetch.resolve! (manifest.root owner) d pinned (g.[:mirrors else []]) {
+        Result.error(why) => Result.error why,
+        Result.ok(dir) => match trust! g d dir {
+            Result.error(why) => Result.error (key + " (" + manifest.dep_source d + ") " + why),
+            Result.ok([verdict, roots]) => Result.ok [dir, verdict, roots],
+        },
+    };
+    match found {
         Result.error(why) => Result.error (why + " (required by " + asker owner_key + ")"),
-        Result.ok(dir) => {
+        Result.ok([dir, verdict, roots]) => {
             let abs = path.absolute! dir;
             let name = if str.is_empty key { "this project" } else { key };
             let on_path = list.any (fn st -> list.head st == abs) trail;
@@ -247,7 +268,8 @@ let follow! owner owner_key d rest kind trail g = {
                         loaded => {
                             let dm = match loaded { Result.ok(m) => m, _ => () };
                             let n = (make_node key dir dm d owner_key).[:abs => abs].[:at => owner_at]
-                                        .[:wants => match want_of d owner_key owner_at { () => [], w => [w] }];
+                                        .[:wants => match want_of d owner_key owner_at { () => [], w => [w] }]
+                                        .[:verdict => verdict].[:roots => roots];
                             let g2 = with_edge owner_key key kind (with_node key n g);
                             let inner = list.cons (step_of abs key (shown! (path.join abs "mind.toml")) kind)
                                                   trail;
@@ -447,8 +469,9 @@ let walk_graph! m o assumed = {
     let root_abs = path.absolute! (manifest.root m);
     let name = match manifest.name m { "" => "this project", n => n };
     let path = [step_of root_abs name (shown! (manifest.path m)) :uses];
-    let start = empty_graph.[:assumed => assumed].[:settings => settings! m o]
-                    .[:pinned => option o :pinned (%{})].[:mirrors => option o :mirrors []];
+    let start = fold (fn g k -> match option o k () { () => g, v => g.[k => v] })
+                     (empty_graph.[:assumed => assumed].[:settings => settings! m o])
+                     trust_keys;
     let walked = fold (fn acc wk -> match acc {
         Result.error(why) => acc,
         Result.ok(g) => walk! m root_key (list.head wk) (list.nth 1 wk) path g,
@@ -682,9 +705,10 @@ let script_section parent owner name =
 /// Every package the build resolved to, as lock entries.
 let rec lock_entries! g section name =
     list.concat [
-        map (fn n -> lock.entry section (node_key n) (manifest.dep_source (node_dep n))
+        map (fn n -> lock.Entry.make section (node_key n) (manifest.dep_source (node_dep n))
                                      (fetch.commit! (node_dep n) (node_dir n)) (node_version n)
-                                     (fetch.hash! (node_dep n) (node_dir n)))
+                                     (fetch.hash! (node_dep n) (node_dir n)) (node_signer n) (node_roots n)
+                                     (list.sort (list.map sign.spell (sign.Verdict.retired (node_verdict n)))))
                  (nodes g),
         list.concat (map (fn pair -> {
             let [owner, sub] = pair;
@@ -698,16 +722,18 @@ let rec lock_entries! g section name =
 /// an edited cache -- are only the hash.
 let drift_message old moved =
     "these dependencies resolved to something other than what mind.lock records:\n"
-    + str.join_str "\n" (map (fn e -> {
-          let o = lock.locked old e;
-          let [what, now, then] = match lock.commit_of e != lock.commit_of o
-                                        && lock.commit_of e != () && lock.commit_of o != () {
-              true => ["commit", lock.commit_of e, lock.commit_of o],
-              false => ["contents", lock.hash_of e, lock.hash_of o],
-          };
-          "  " + lock.key_of e + " (" + lock.source_of e + ") has " + what + " " + short now
-          + ", but the lock says " + short then
-          + (if lock.section_of e == "program" { "" } else { "  [" + lock.section_of e + "]" })
+    + str.join_str "\n" (list.map (fn e -> match lock.locked old e {
+          // Drift is only ever found against an entry the lock has.
+          () => "  " + lock.Entry.key e,
+          o => {
+              let [what, now, then] = match lock.Entry.commit e != lock.Entry.commit o
+                                            && lock.Entry.commit e != () && lock.Entry.commit o != () {
+                  true => ["commit", lock.Entry.commit e, lock.Entry.commit o],
+                  false => ["contents", lock.Entry.hash e, lock.Entry.hash o],
+              };
+              "  " + lock.Entry.key e + " (" + to_string (lock.Entry.source e) + ") has " + what + " " + short now
+              + ", but the lock says " + short then + section_note e
+          },
       }) moved)
     + "\na tag was moved, the source changed what it serves, or the cache was edited by hand.\n"
     + "If that was meant, `mind update` accepts what is there now";
@@ -719,31 +745,173 @@ let short c = {
     if bare == c { cut } else { fetch.prefix + cut }
 };
 
+let section_note e = if lock.Entry.section e == "program" { "" } else { "  [" + lock.Entry.section e + "]" };
+
+// --- trust -----------------------------------------------------------------------
+//
+// sign.dr decides whether a package may be used; what is here is what it is
+// told, gathered from the manifest that names the dependency, the root's
+// `[trust]`, the lock, and the keys known to be revoked -- the lock's
+// `[revoked]` and `$MIND_HOME/revoked`, which every project on the machine
+// shares, since a key revoked for one is revoked for all.
+
+/// Where this machine remembers revoked keys.
+let revoked_file! () = path.join (util.mind_home! ()) "revoked";
+
+/// The keys this machine has seen revoked, spelled.
+let known_revoked! () =
+    match file.read! (revoked_file! ()) {
+        () => [],
+        text => list.filter (fn l -> sign.key_bytes l != ()) (map str.trim (str.split "\n" text)),
+    };
+
+/// Add keys to what this machine remembers as revoked.
+let remember_revoked! keys = {
+    let known = known_revoked! ();
+    match list.filter (fn k -> not (list.contains k known)) (list.unique keys) {
+        [] => (),
+        fresh => {
+            file.mkdir_all! (util.mind_home! ())
+            file.write! (revoked_file! ()) (str.join_str "" (map (fn k -> k + "\n") (list.append known fresh)))
+        },
+    }
+};
+
+/// The keys a project names for a dependency, as bytes: its own entry's and
+/// the root's `[trust]` for its key. A key that is not one is an error, not
+/// a key quietly dropped.
+let roots_of : %{ :string => :any } -> [:any] -> Result [:string] :string;
+let roots_of trust d = {
+    let written = list.append (sign.listed (manifest.spec_get d "keys")) (sign.listed (trust.[manifest.dep_name d else ()]));
+    match list.filter (fn k -> sign.key_bytes k == ()) written {
+        [] => Result.ok (list.unique (list.flat_map (fn k -> match sign.key_bytes k { () => [], b => [b] }) written)),
+        [bad, .._] => Result.error ("names `" + bad + "` as a key; a key is ed25519: and 64 hex digits"),
+    }
+};
+
+/// Whether `d`, found at `dir`, may be used: `[verdict, roots]`, the second
+/// the keys the project named, spelled and sorted, for the lock. `ctx` is a
+/// graph, or anything holding the walk's `trust_keys`.
+///
+/// What the lock remembers -- the signer and the keys retired -- is found by
+/// the dependency's key, not its source, since a new release moves the source
+/// with its tag and must not shed what the last one taught. It counts while
+/// the dependency still comes from the same place, `#ref` aside, and the
+/// project still names the keys it named then: pointing at another repository,
+/// or naming other keys, is choosing to trust anew, the way editing a source
+/// is choosing to fetch anew.
+let trust! ctx d dir =
+    match [manifest.dep_kind d, roots_of (ctx.[:trust else (%{})]) d] {
+        [:path, _] => Result.ok [sign.Verdict.new (), []],
+        [_, Result.error(why)] => Result.error why,
+        [_, Result.ok(roots)] => {
+            let spelled = list.sort (list.map sign.spell roots);
+            let bytes ks = list.flat_map (fn k -> match sign.key_bytes (to_string k) { () => [], b => [b] }) ks;
+            let place s = list.head (manifest.split_ref (to_string s));
+            let remembered = match (ctx.[:locked else (%{})]).[manifest.dep_name d else ()] {
+                () => [(), []],
+                e => if lock.Entry.keys e == spelled && place (lock.Entry.source e) == place (manifest.dep_source d) {
+                    [match lock.Entry.signer e { () => (), s => sign.key_bytes (to_string s) }, bytes (lock.Entry.retired e)]
+                } else { [(), []] },
+            };
+            let p = sign.Policy.new ()
+                |> sign.Policy.set_roots roots
+                |> sign.Policy.set_signer (list.head remembered)
+                |> sign.Policy.set_retired (list.nth 1 remembered)
+                |> sign.Policy.set_revoked (bytes (ctx.[:revoked else []]))
+                |> sign.Policy.set_release (match manifest.dep_rev d { [:tag, t] => to_string t, _ => () })
+                |> sign.Policy.set_required (ctx.[:required else false]);
+            match sign.decide p (fetch.hash! d dir) (file.read! (path.join dir sign.file_name)) {
+                Result.error(why) => Result.error why,
+                Result.ok(v) => Result.ok [v, spelled],
+            }
+        },
+    };
+
+/// What a trust check needs outside a walk: `mind add`'s, for the one
+/// dependency it is about to write down.
+let trust_context! m = %{
+    :trust => manifest.trust m,
+    :required => manifest.require_signatures m,
+    :revoked => list.unique (list.append (known_revoked! ()) (lock.revoked (lock.load! (manifest.root m)))),
+};
+
+/// Every node of every program in the build, build scripts' included.
+let rec every_node g =
+    list.concat (list.cons (nodes g) (map (fn pair -> every_node (list.nth 1 pair)) (map.pairs (g.[:builds else (%{})]))));
+
+/// Packages whose version went down under `mind update`, from the same
+/// source: a branch or a tarball URL that now serves an older release, which
+/// is what someone replaying an old release looks like.
+let downgrades before now =
+    list.filter (fn e -> match lock.locked before e {
+        () => false,
+        o => lock.Entry.source o == lock.Entry.source e && match [version.parse_or_unit (to_string (lock.Entry.version o)),
+                                                                   version.parse_or_unit (to_string (lock.Entry.version e))] {
+            [(), _] => false,
+            [_, ()] => false,
+            [was, is] => version.older is was,
+        },
+    }) (lock.packages now);
+
 /// The graph, checked against the lock and the lock brought up to date:
 /// what every command resolves through. `accept` is `mind update`'s: the
 /// commits have moved because it moved them, and the lock follows.
 ///
 /// The lock is read before the walk, so a fetch knows what bytes it is after
-/// and can take them from a mirror. `mind update` does not hand it on: the
-/// source is what it means to ask.
+/// and can take them from a mirror, and a trust check knows who signed
+/// before. `mind update` does not hand on the bytes -- the source is what it
+/// means to ask -- but it does hand on who signed them: an update that drops
+/// a package's signature, or changes its author, is what an attacker's
+/// update looks like.
 let resolve! m o accept = {
     let root = manifest.root m;
     let before = lock.load! root;
-    let pinned = if accept { %{} } else { lock.pinned before };
-    let walk_with = o.[:pinned => pinned].[:mirrors => fetch.mirrors! (manifest.mirrors m)];
+    let locked = lock.by_key before;
+    let pinned = if accept { %{} } else {
+        fold (fn acc [src, e] -> match lock.Entry.hash e { () => acc, h => acc.[src => [h, lock.Entry.commit e]] })
+             (%{}) (map.pairs (lock.by_source before))
+    };
+    let revoked = list.unique (list.append (known_revoked! ()) (lock.revoked before));
+    let walk_with = o.[:pinned => pinned].[:mirrors => fetch.mirrors! (manifest.mirrors m)].[:locked => locked]
+                     .[:revoked => revoked].[:trust => manifest.trust m].[:required => manifest.require_signatures m];
     match graph! m walk_with {
         Result.error(why) => Result.error why,
         Result.ok(g) => {
             let name = match manifest.name m { "" => "root", n => n };
             let now = lock_entries! g "program" name;
-            match [accept, lock.drift before now] {
-                [false, [e, ..more]] => Result.error (drift_message before (list.cons e more)),
+            // Revocations met in this walk: one package can revoke the key
+            // another was signed with, whichever the walk reached first.
+            let seen = list.flat_map (fn n -> list.map (fn k -> [sign.spell k, manifest.dep_source (node_dep n)])
+                                                  (sign.Verdict.revoked (node_verdict n)))
+                                     (every_node g);
+            let all_revoked = list.unique (list.append revoked (map list.head seen));
+            let fallen = list.filter (fn e -> lock.Entry.signer e != () && list.contains (lock.Entry.signer e) all_revoked) now;
+            let lower = if accept && not (option o :allow_downgrade false) { downgrades before now } else { [] };
+            match [fallen, accept, lock.drift before now, lower] {
+                [[e, .._], _, _, _] =>
+                    Result.error (lock.Entry.key e + " (" + to_string (lock.Entry.source e) + ") is signed by "
+                                  + to_string (lock.Entry.signer e) + ", which has been revoked"),
+                [_, false, [e, ..more], _] => Result.error (drift_message before (list.cons e more)),
+                [_, true, _, [e, ..more]] => Result.error (
+                    "these dependencies would go back to an older version from the same source:\n"
+                    + str.join_str "\n" (list.map (fn d -> "  " + lock.Entry.key d + " (" + to_string (lock.Entry.source d) + ") "
+                                                       + (match lock.locked before d { () => "?", o => to_string (lock.Entry.version o) })
+                                                       + " -> "
+                                                       + to_string (lock.Entry.version d) + section_note d)
+                                              (list.cons e more))
+                    + "\nan older release served in place of a newer one looks like this; "
+                    + "`mind update --allow-downgrade` takes it if it was meant"),
                 _ => {
+                    remember_revoked! (map list.head seen)
+                    let known = lock.revoked before;
+                    let fresh = list.filter (fn [k, _] -> not (list.contains k known)) seen;
                     // A walk that left something out -- the dev dependencies,
                     // or an edge whose condition is off in this build -- keeps
                     // what the lock says about it.
                     let complete = option o :dev false && list.is_empty (g.[:off else []]);
-                    lock.save! root (lock.merge before now complete)
+                    lock.save! root (lock.merge before (list.append now (map (fn [k, src] -> lock.revocation k src) fresh))
+                                                complete)
                     ok g
                 },
             }
