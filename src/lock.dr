@@ -121,10 +121,17 @@ let load! root = match file.read! (path.join root file_name) { () => [], text =>
 
 /// Write the lock when its text would change, and not otherwise: a build that
 /// resolved the same graph leaves the file, and its timestamp, alone.
+/// Write the lock, if it changed. A lock that would record nothing is not
+/// created where there was none: a project with no dependencies, or a lone
+/// file run by `mind run hello.dr`, has nothing to pin, and a file appearing
+/// beside it would only be something to delete.
 let save! root entries = {
     let path = path.join root file_name;
     let text = render entries;
-    if file.read! path == text { () } else { file.write! path text }
+    match file.read! path {
+        () => if list.is_empty entries { () } else { file.write! path text },
+        old => if old == text { () } else { file.write! path text },
+    }
 };
 
 when test {

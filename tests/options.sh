@@ -155,6 +155,18 @@ mv "$tmp/plclash/app/lib.dr" "$tmp/plclash/app/main.dr"
 pkg plclash/other '[payload]\nnote = "theirs.txt"\n'
 check "two packages may not give one name two files" plclash 1 "two packages carry a payload named \`note\`" build
 
+# One file, no project: `mind run FILE.dr` builds it with the standard
+# library and the modules beside it, and leaves nothing beside it.
+mkdir -p "$tmp/lone/app"
+printf 'import std.console;\nimport std.list;\nimport std.os;\nimport helper;\nlet main! = console.print! (helper.greet (to_string (list.length (os.args! ()))));\n' >"$tmp/lone/app/hello.dr"
+printf 'let greet n = "hello with " + n;\n' >"$tmp/lone/app/helper.dr"
+check "a lone file runs without a project" lone 0 "hello with 2" run hello.dr a b
+check "and is given what follows --" lone 0 "hello with 1" run hello.dr -- --help
+left=$(cd "$tmp/lone/app" && echo *)
+if [ "$left" = "hello.dr helper.dr" ]; then echo "ok   and writes nothing beside it"; pass=$((pass + 1))
+else echo "FAIL and writes nothing beside it: found $left"; fail=$((fail + 1)); fi
+check "a file inside a project runs on its own" plain 0 "hello with 0" run ../../lone/app/hello.dr
+
 echo
 echo "$pass option cases passed, $fail failed"
 [ "$fail" -eq 0 ]

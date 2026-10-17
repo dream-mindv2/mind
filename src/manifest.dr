@@ -30,6 +30,16 @@ let make root doc = %{ :root => root, :doc => doc };
 /// is a manifest that says nothing rather than a second code path.
 let empty = make "." (%{});
 
+/// A lone source file as a project of its own, for `mind run hello.dr` where
+/// there is no manifest: the file is the entry, its directory holds whatever
+/// modules it imports, and it is named for the file. Like `empty`, this is a
+/// manifest that says only what follows from the file, so building it is an
+/// ordinary build and the standard library is found the way it always is.
+let lone : :string -> :map;
+let lone file = make (path.dirname file)
+    (%{ "package" => %{ "name" => path.stem file, "version" => "0.0.0",
+                        "src" => ".", "entry" => path.basename file } });
+
 let root m = m.[:root else "."];
 let doc m = m.[:doc else (%{})];
 

@@ -111,6 +111,7 @@ Given twice, the second is relative to the first.
 | `mind build` | compile to `target/<profile>/<name>.dream` |
 | `mind build GOAL..` | make what the build script names instead ([Goals](#goals)) |
 | `mind run [-- args]` | compile, then run with the arguments given |
+| `mind run FILE.dr [args]` | compile and run one file on its own, with the standard library and the modules beside it; no project needed |
 | `mind test [NAME..]` | run every test at once: each package's units and its build script's checks |
 | `mind check` | compile without writing an image |
 | `mind repl` | deprecated interactive session; use source files with `mind run` |
