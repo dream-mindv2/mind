@@ -121,6 +121,8 @@ Given twice, the second is relative to the first.
 | `mind update [NAME]` | fetch git and URL dependencies again |
 | `mind verify` | hash every fetched dependency again and hold it to `mind.lock` |
 | `mind mirror DIR` | write every fetched dependency into `DIR`, as a mirror serves it |
+| `mind keygen` | make a key to sign releases with, and print its public half |
+| `mind sign` | sign this package's last commit into `mind.sig` |
 | `mind deps`, `mind tree` | every package the project resolves to, as a list or as who needs what |
 | `mind info` | what this build would run, without running it |
 | `mind options` | every package's options, and what this build sets them to |
@@ -245,6 +247,41 @@ team, or keep one on a CI runner. A mirror is never trusted, only checked: one
 that serves anything else is refused and the next is asked. A copy from a
 mirror is kept by its hash, in `$MIND_HOME/cache/sha256`. `mind update` asks
 the sources and nothing else, since moving the lock is the point of it.
+
+### Signed releases
+
+A hash protects a version already locked. A signature protects the one you
+are about to fetch: a dependency that lists `keys` is used only when it
+carries a signature by one of them over the bytes that arrived, however they
+arrived -- the source, the cache or a mirror.
+
+```toml
+[dependencies]
+json = { git = "https://github.com/u/json", tag = "v1.4", keys = ["ed25519:3d40..."] }
+```
+
+`mind add URL --tag v1.4 --key ed25519:...` writes that, and refuses a release
+the key did not sign. Keys are Ed25519 (`std.crypto`).
+
+For an author:
+
+```
+mind keygen            # once: $MIND_HOME/signing.key, readable by you alone
+mind sign              # for each release: signs the last commit into mind.sig
+git add mind.sig && git commit -m "Sign v1.4" && git tag v1.4
+```
+
+What is signed is the tree hash the lock records, and `mind.sig` is left out
+of it, so committing the signature changes nothing it signs. In a git
+repository `mind sign` hashes a clone of the last commit -- exactly what a
+fetch checks out -- and says so if there are uncommitted changes it left out;
+anywhere else it signs the directory as it stands, which is then what to pack.
+Signing again replaces that key's line and keeps any other key's, so a release
+can carry several signatures. `--signing-key FILE` uses another key.
+
+A signature says who made the bytes, not which release they are. The bytes
+include `mind.toml`, so a `version` requirement in the entry is what refuses an
+older signed release served in place of the one you asked for.
 
 ### Cycles
 
@@ -430,6 +467,7 @@ whose checks `mind test mind` runs after the units.
 | `build.dr` | the dependency graph, options, and calling the compiler (the module, not the script) |
 | `script.dr` | running build scripts and folding what they make into the compile |
 | `lock.dr` | `mind.lock`, and what counts as drift: a commit or a hash |
+| `sign.dr` | signed releases: keys, `mind.sig`, and what is signed |
 | `docs.dr`, `documentation/` | `mind docs`: guides, API pages, examples run, links, the theme |
 | `serve.dr` | `mind serve` and `mind docs serve` |
 | `pack/` | `mind pack` and every package format it writes |

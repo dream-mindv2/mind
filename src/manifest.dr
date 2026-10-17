@@ -467,7 +467,11 @@ let quoted s = "\"" + s + "\"";
 
 let spec_line key spec = {
     let field k = match spec.[k else ()] { () => [], v => [k + " = " + quoted (to_string v)] };
-    let fields = list.concat (map field ["path", "git", "url", "tag", "branch", "rev"]);
+    let keys = match spec.["keys" else ()] {
+        () => [],
+        ks => ["keys = [" + str.join_str ", " (list.map (fn k -> quoted (to_string k)) ks) + "]"],
+    };
+    let fields = list.append (list.concat (map field ["path", "git", "url", "tag", "branch", "rev"])) keys;
     key + " = { " + str.join_str ", " fields + " }"
 };
 

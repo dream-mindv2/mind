@@ -22,6 +22,7 @@
 import std.char;
 import std.cli;
 import std.console;
+import std.crypto;
 
 import std.file;
 import std.io;
@@ -42,6 +43,7 @@ import build;
 import config;
 import fetch;
 import manifest;
+import sign;
 import util;
 
 let version = "0.1.0";
@@ -71,6 +73,10 @@ let opts = [
     cli.value "" "branch" "BRANCH" "pin a git dependency to a branch",
     cli.value "" "rev" "REV" "pin a git dependency to a commit",
     cli.flag "" "dev" "a [dev-dependencies] entry: only `mind test` sees it",
+    cli.list_of "" "key" "ed25519:HEX" "use only releases this key signed (may be given more than once)",
+
+    cli.section "signing releases",
+    cli.value "" "signing-key" "FILE" "the secret key `keygen` writes and `sign` reads (default: $MIND_HOME/signing.key)",
 
     cli.section "how to build it",
     cli.value "" "compiler" "PATH" "the compiler to run; a `.dream` is run by the VM",
@@ -98,6 +104,8 @@ let command_spec = [
     cli.command "update" "fetch branch- and url-pinned dependencies again" [],
     cli.command "verify" "hash every fetched dependency again and check it against mind.lock" [],
     cli.command "mirror" "write every fetched dependency into DIR, for $MIND_MIRRORS" [],
+    cli.command "keygen" "make a key to sign releases with, and print its public half" [],
+    cli.command "sign" "sign this package's last commit into mind.sig" [],
     cli.command "deps"  "list every package this project resolves to" [],
     cli.command "tree"  "show the dependency tree" [],
     cli.command "info"  "show what this build would run, without running it" [],
@@ -149,6 +157,14 @@ HEX.tar.gz, named in $MIND_MIRRORS or in the manifest:
   mirrors = [\"vendor\", \"https://mirror.example.com/dream\"]
 
 `mind mirror DIR` writes one, and `mind verify` rehashes the cache.
+
+A dependency can be held to its author's key, so that only a release they
+signed is used, however it arrived:
+
+  json = { git = \"https://github.com/u/json\", tag = \"v1.4\", keys = [\"ed25519:3d40..\"] }
+
+`mind add --key ed25519:..` writes that. An author runs `mind keygen` once and
+`mind sign` for each release, then commits mind.sig and tags.
 
 `[build]` is only for how *this* package is compiled, and every key has a
 command-line spelling that wins over it:
@@ -694,8 +710,10 @@ let cmd_verify! m o = {
     let ns = fetched (graph_of! m o);
     let changed = list.filter (fn n -> fetch.tree_hash! (build.node_dir n)
                                   != fetch.hash! (build.node_dep n) (build.node_dir n)) ns;
+    let signed = list.length (list.filter (fn n -> manifest.spec_get (build.node_dep n) "keys" != ()) ns);
     match changed {
-        [] => console.print! ("verified " + to_string (list.length ns) + " fetched packages against mind.lock"),
+        [] => console.print! ("verified " + to_string (list.length ns) + " fetched packages against mind.lock"
+                              + (if signed == 0 { "" } else { ", " + to_string signed + " of them signed by a key they trust" })),
         _ => fail! ("these packages' files are not what was fetched:\n"
                     + str.join_str "\n" (map (fn n -> "  " + describe n + "  (" + build.node_dir n + ")") changed)
                     + "\n`mind update NAME` fetches each again"),
@@ -720,21 +738,116 @@ let cmd_mirror! m o args = {
                     + (match list.length wrote - fresh { 0 => "", k => " (" + to_string k + " already there)" }))
 };
 
+// --- signing releases ----------------------------------------------------------
+//
+// sign.dr says what a signature is and why; these are the author's half.
+
+/// Where the secret key is: `--signing-key`, or `$MIND_HOME/signing.key`.
+let signing_key_path! c =
+    match cli.get () c "signing-key" {
+        () => path.join (util.mind_home! ()) "signing.key",
+        at => at,
+    };
+
+/// Make a signing key: 32 random bytes in a file only its owner can read. The
+/// file is made empty and closed to others first, and only then given the
+/// key, so it is never readable by anyone else while it holds one. An existing
+/// key is never replaced: every release it signed would stop verifying for
+/// whoever trusts it, and nothing could tell them why.
+let cmd_keygen! c = {
+    let at = signing_key_path! c;
+    if io.exists! at { fail! (at + " already holds a key, and replacing it would orphan every release it signed; "
+                              + "pass --signing-key FILE to make another") }
+    file.mkdir_all! (path.dirname at)
+    file.write! at ""
+    // 0600.
+    io.chmod! at 384
+    let seed = crypto.random_bytes! 32;
+    file.write! at (crypto.hex seed + "\n")
+    let public = sign.spell (crypto.ed25519_public seed);
+    console.print! ("wrote a signing key to " + at + " -- keep it, and keep it to yourself")
+    console.print! ("its public key, for the manifests of those who use your releases:\n  " + public)
+};
+
+/// The secret key's seed, or a failure that says how to make one.
+let signing_seed! c = {
+    let at = signing_key_path! c;
+    match file.read! at {
+        () => fail! ("no signing key at " + at + "; `mind keygen` makes one"),
+        text => match crypto.unhex (str.trim text) {
+            () => fail! (at + " does not hold a signing key"),
+            seed => if str.byte_length seed == 32 { seed } else { fail! (at + " does not hold a signing key") },
+        },
+    }
+};
+
+/// Sign this package as it will be fetched. In a git repository that is the
+/// last commit, cloned, so what is hashed is exactly what a fetch checks out:
+/// untracked files and uncommitted edits are not in it, and are said to be
+/// left out. Anywhere else it is the directory as it stands, which is then
+/// what to pack. The signature is written into `mind.sig`, replacing this
+/// key's line from an earlier release and keeping any other key's.
+let cmd_sign! m c = {
+    let root = manifest.root m;
+    let seed = signing_seed! c;
+    let in_git = io.exists! (path.join root ".git");
+    let h = match in_git {
+        false => fetch.tree_hash! root,
+        true => {
+            let scratch = path.join (util.mind_home! ()) ("sign-" + file.scratch_suffix! ());
+            let answer = match fetch.run! "git clone" "git" ["clone", "--quiet", root, scratch] {
+                Result.error(why) => { file.remove_all! scratch; fail! why },
+                _ => fetch.tree_hash! scratch,
+            };
+            strict! answer
+            file.remove_all! scratch
+            answer
+        },
+    };
+    if in_git {
+        match fetch.run! "git status" "git" ["-C", root, "status", "--porcelain"] {
+            Result.ok(out) => {
+                let pending = list.filter (fn l -> not (str.is_empty (str.trim l)) && not (str.ends_with sign.file_name l))
+                                          (str.split "\n" out);
+                if not (list.is_empty pending) {
+                    console.error! ("note: signing the last commit; " + to_string (list.length pending)
+                                    + " uncommitted change(s) are not part of it")
+                }
+            },
+            _ => (),
+        }
+    }
+    let public = crypto.ed25519_public seed;
+    let at = path.join root sign.file_name;
+    let before = match file.read! at { () => "", t => t };
+    file.write! at (sign.with_line before (sign.line public h (crypto.ed25519_sign seed (sign.message h))))
+    console.print! ("signed " + h + " as " + sign.spell public)
+    console.print! (if in_git { "commit " + sign.file_name + " -- it is not part of what it signs -- and tag the release" }
+                    else { "pack this directory as it stands, " + sign.file_name + " with it" })
+};
+
 // --- adding and removing -------------------------------------------------------
 
 /// The spec `mind add` writes, from what was typed: the source read the way
-/// the manifest would read it, and then `--tag`, `--branch` or `--rev` in place
-/// of whatever the source's `#` said.
+/// the manifest would read it, then `--tag`, `--branch` or `--rev` in place
+/// of whatever the source's `#` said, and the `--key`s it must be signed by.
 let add_spec! source c = {
     let base = manifest.string_spec source;
     let pins = filter (fn p -> cli.get () c p != ()) ["tag", "branch", "rev"];
-    match pins {
+    let pinned = match pins {
         [] => base,
         [p] => {
             let unpinned = fold (fn acc k -> map.remove k acc) base ["tag", "branch", "rev"];
             unpinned.[p => cli.get () c p]
         },
         _ => fail! "give one of --tag, --branch or --rev",
+    };
+    match cli.all c "key" {
+        [] => pinned,
+        keys => pinned.["keys" => strict! (list.map (fn k -> match sign.key_bytes k {
+            () => fail! ("`" + k + "` is not a key: one is ed25519: and 64 hex digits"),
+            bytes => sign.spell bytes,
+        }) keys)],
     }
 };
 
@@ -964,6 +1077,8 @@ let run_command! c theirs = {
                   "update" => cmd_update! (project! ()) o (cli.rest c),
                   "verify" => cmd_verify! (project! ()) o,
                   "mirror" => cmd_mirror! (project! ()) o (cli.rest c),
+                  "keygen" => cmd_keygen! c,
+                  "sign" => cmd_sign! (project! ()) c,
                   "add"   => cmd_add! (project! ()) c (cli.rest c),
                   "remove" => cmd_remove! (project! ()) (cli.rest c),
                   "clean" => cmd_clean! (project! ()),

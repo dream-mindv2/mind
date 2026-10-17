@@ -1,7 +1,8 @@
 #!/bin/sh
 # The dependency graph, against packages on disk: cycles, diamonds, version
 # requirements, build dependencies in their own namespace, two revisions of
-# one repository, the lock, and the hashes and mirrors it pins. Each case is a directory of manifests, one
+# one repository, the lock, the hashes and mirrors it pins, and signed
+# releases. Each case is a directory of manifests, one
 # `mind deps`, and the first line of what it said.
 set -u
 
@@ -139,6 +140,53 @@ check "a tarball is locked by its bytes" tgz 0 "tz v1.0.0"
 echo 'let v = 2;' >"$tmp/tgz/pkg/lib.dr" && tar -czf "$tmp/tz.tar.gz" -C "$tmp/tgz" pkg
 rm -rf "$tmp/home/cache"
 check "a replaced tarball disagrees with the lock" tgz 1 "has contents sha256:"
+
+# Signed releases. An author makes a key and signs a commit; a user who
+# trusts the key gets that release, and nothing else is let through -- an
+# unsigned one, another key's, or a commit made after the signature.
+git_c() { git -c user.email=t@t -c user.name=t "$@"; }
+author="$tmp/author.key"
+mkdir -p "$tmp/keyapp" && printf '[package]\nname = "k"\nversion = "0.1.0"\n' >"$tmp/keyapp/mind.toml"
+public=$(cd "$tmp/keyapp" && "$dream" "$mind" keygen --signing-key "$author" | tail -1 | tr -d ' ')
+case "$(stat -c %a "$author" 2>/dev/null || stat -f %Lp "$author")" in
+    600) echo "ok   a signing key is readable by its owner alone"; pass=$((pass + 1)) ;;
+    *) echo "FAIL a signing key is readable by its owner alone"; fail=$((fail + 1)) ;;
+esac
+other=$(cd "$tmp/keyapp" && "$dream" "$mind" keygen --signing-key "$tmp/other.key" | tail -1 | tr -d ' ')
+out=$(cd "$tmp/keyapp" && "$dream" "$mind" keygen --signing-key "$author" 2>&1)
+case "$out" in *"already holds a key"*) echo "ok   a key is never replaced"; pass=$((pass + 1)) ;;
+    *) echo "FAIL a key is never replaced: $out"; fail=$((fail + 1)) ;; esac
+
+mkdir -p "$tmp/srepo" && (cd "$tmp/srepo" && git init -q && printf '[package]\nname = "signed"\nversion = "1.0.0"\n' >mind.toml \
+    && echo 'let v = 1;' >lib.dr && git add . && git_c commit -qm one)
+(cd "$tmp/srepo" && "$dream" "$mind" sign --signing-key "$author" >/dev/null && git add mind.sig \
+    && git_c commit -qm sign && git tag v1 \
+    && echo 'let w = 2;' >>lib.dr && git_c commit -qam unsigned && git tag v2 \
+    && git rm -q mind.sig && git_c commit -qm nosig && git tag v3)
+surl="file://$tmp/srepo"
+
+pkg sig/app 0.1.0 "[dependencies]\ns = { git = \"$surl\", tag = \"v1\", keys = [\"$public\"] }\n"
+check "a release signed by a trusted key is used" sig 0 "s v1.0.0 (package"
+check "and verify says so" sig 0 "1 of them signed by a key they trust" verify
+pkg wrong/app 0.1.0 "[dependencies]\ns = { git = \"$surl\", tag = \"v1\", keys = [\"$other\"] }\n"
+check "a release signed by another key is refused" wrong 1 "is not signed by a key its entry trusts"
+pkg moved/app 0.1.0 "[dependencies]\ns = { git = \"$surl\", tag = \"v2\", keys = [\"$public\"] }\n"
+check "a commit after the signature is refused" moved 1 "but what arrived hashes to"
+pkg bare/app 0.1.0 "[dependencies]\ns = { git = \"$surl\", tag = \"v3\", keys = [\"$public\"] }\n"
+check "an unsigned release is refused" bare 1 "has no mind.sig"
+pkg plain/app 0.1.0 "[dependencies]\ns = { git = \"$surl\", tag = \"v3\" }\n"
+check "a dependency that names no key needs no signature" plain 0 "s v1.0.0 (package"
+pkg added/app 0.1.0 ""
+check "add --key trusts the key" added 0 "added signed" "add $surl --tag v1 --key $public"
+has "and writes it into the manifest" "keys = \[\"$public\"\]" "$tmp/added/app/mind.toml"
+check "add --key refuses a release the key did not sign" added 1 "but what arrived hashes to" "add $surl --tag v2 --name s2 --key $public"
+check "a signed release goes into a mirror" sig 0 "wrote 1 packages" "mirror $tmp/smirror"
+mv "$tmp/srepo" "$tmp/srepo.gone"
+rm -rf "$tmp/home/cache"
+export MIND_MIRRORS="$tmp/smirror"
+check "and comes back out of it still signed" sig 0 "1 of them signed by a key they trust" verify
+unset MIND_MIRRORS
+mv "$tmp/srepo.gone" "$tmp/srepo"
 
 echo
 echo "$pass graph cases passed, $fail failed"

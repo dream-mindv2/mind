@@ -29,6 +29,7 @@ import std.path;
 import std.str;
 
 import manifest;
+import sign;
 import util;
 
 /// Where fetched packages are kept. Shared between projects, because a
@@ -124,7 +125,9 @@ let url_fetch! d dir = {
 // tarball of the same tree and a mirror's copy all agree, whatever tool made
 // them or when. Modes and timestamps are left out because an archive does not
 // carry them faithfully, and git's own `.git` and `mind`'s markers because
-// they record how the copy was made, not what it is.
+// they record how the copy was made, not what it is. So is `mind.sig`, the
+// package's signatures over this hash (sign.dr), which could not be part of
+// what they sign.
 
 /// Where a fetched copy keeps its hash, so a build hashes nothing it hashed
 /// before. `mind verify` is what rehashes, for a cache that may have been
@@ -135,7 +138,7 @@ let prefix = "sha256:";
 
 /// Whether a file under a package is part of what it is.
 let hashed rel =
-    list.all (fn part -> not (list.contains part [".git", marker, commit_file, hash_file]))
+    list.all (fn part -> not (list.contains part [".git", marker, commit_file, hash_file, sign.file_name]))
              (path.segments rel);
 
 /// The hash of everything under `dir` that is the package's.
@@ -321,7 +324,30 @@ let forget! d =
 /// cannot be reached. Without it the source is the only authority there is.
 /// Whether the copy found agrees with the lock is `build.resolve!`'s to say,
 /// for every package at once.
-let resolve! from_root d locked mirrors = {
+///
+/// A dependency whose entry lists `keys` must be signed by one of them,
+/// whichever way it arrived and every time it is resolved -- a copy in the
+/// cache is held to the same as one fetched a moment ago (sign.dr).
+let resolve! from_root d locked mirrors =
+    match obtain! from_root d locked mirrors {
+        Result.ok(dir) => signed! d dir,
+        failed => failed,
+    };
+
+/// `dir`, when `d` lists no keys or one of them signed what is there.
+let signed! d dir =
+    match [manifest.dep_kind d, manifest.spec_get d "keys"] {
+        [:path, _] => ok dir,
+        [_, ()] => ok dir,
+        [_, keys] => match sign.check (sign.listed keys) (hash! d dir) (file.read! (path.join dir sign.file_name)) {
+            Result.ok(_) => ok dir,
+            Result.error(why) => Result.error (manifest.dep_name d + " (" + manifest.dep_source d + ") " + why),
+        },
+    };
+
+/// Where `d` is, fetching it when it is not there: `resolve!` without the
+/// signature check.
+let obtain! from_root d locked mirrors = {
     match manifest.dep_kind d {
         :path => {
             // Relative to the manifest that named it, so moving a project
@@ -403,8 +429,8 @@ when test {
         test.case "slug keeps dots and dashes"
             $( test.eq! "a-b.c" (slug "a-b.c") ),
         test.case "git's and mind's own files are not the package"
-            $( test.eq! [true, false, false, false, true]
-                        (map hashed ["src/lib.dr", ".git/HEAD", "sub/.git/config", ".mind-hash", "a.mind-hash"]) ),
+            $( test.eq! [true, false, false, false, true, false]
+                        (map hashed ["src/lib.dr", ".git/HEAD", "sub/.git/config", ".mind-hash", "a.mind-hash", "mind.sig"]) ),
         test.case "only a hash's own spelling names a place"
             $( test.eq! [str.repeat 64 "a", (), (), ()]
                         (map hex_of ["sha256:" + str.repeat 64 "a", "sha256:../../etc", "md5:" + str.repeat 64 "a",

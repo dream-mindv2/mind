@@ -1,0 +1,162 @@
+// Signed releases.
+//
+// A hash in `mind.lock` protects a version you have already fetched: the
+// next fetch of it must be the same bytes. It says nothing about a version
+// you are fetching for the first time, which is whatever the host serves.
+// A signature does. A dependency that lists `keys` in its manifest entry
+//
+//     json = { git = "https://github.com/u/json", tag = "v1.4", keys = ["ed25519:3d40.."] }
+//
+// is only used when it carries a signature by one of them over the bytes that
+// arrived, so a host -- or a mirror, or anyone between -- can serve a release
+// only its author signed.
+//
+// **What is signed is the tree hash** (fetch.dr), the one already in the lock,
+// behind a line naming what it is (`message`), so that a key used for this
+// signs nothing that could be taken for something else. The signatures are a
+// file in the package, `mind.sig`, one line per key, and the tree hash leaves
+// that file out: adding a signature changes nothing it signs, and the
+// signature travels with the bytes through git, a tarball and a mirror alike.
+// `mind sign` writes the line; committing the file and then tagging is a
+// release.
+//
+// **Keys are Ed25519** (`std.crypto`), written `ed25519:` and 64 hex digits.
+// A secret key is a file holding its 32-byte seed in hex, `mind keygen`
+// makes one, and nothing here ever prints it.
+//
+// What a signature does not do: say *which* release. The bytes it covers
+// include `mind.toml` and its version, so a `version` requirement in the
+// entry is what refuses an old release served in place of a new one.
+//
+// This module is pure. Reading the files is the caller's.
+
+import std.crypto;
+import std.list;
+import std.str;
+
+/// The file a package's signatures are in, at its root.
+let file_name = "mind.sig";
+
+let algorithm = "ed25519:";
+
+/// What a key signs for a package whose tree hashes to `h`.
+let message : :string -> :string;
+let message h = "mind-release-v1\n" + h + "\n";
+
+/// A key as written, `ed25519:HEX`, to its 32 bytes, or `()` for text that is
+/// not one. Either case of hex reads; it is written lowercase.
+let key_bytes : :string -> :string | :unit;
+let key_bytes text =
+    match str.starts_with algorithm text {
+        false => (),
+        true => match crypto.unhex (str.trim_prefix algorithm text) {
+            () => (),
+            b => if str.byte_length b == 32 { b } else { () },
+        },
+    };
+
+/// How a key is written.
+let spell : :string -> :string;
+let spell bytes = algorithm + crypto.hex bytes;
+
+/// A manifest's `keys`, which may be one string or a list of them.
+let listed : :any -> [:string];
+let listed v = match v { () => [], s if type_of s == :string => [s], ks => map to_string ks };
+
+/// The `[key, hash, signature]` lines of a signature file. Blank lines and
+/// `#` comments are skipped, and so is a line of the wrong shape: one bad
+/// line must not hide a good one below it.
+let lines : :string -> [[:string]];
+let lines text =
+    list.flat_map (fn line -> match str.words line {
+        [k, h, s] if not (str.starts_with "#" k) => [[k, h, s]],
+        _ => [],
+    }) (str.split "\n" text);
+
+/// The line `mind sign` writes.
+let line : :string -> :string -> :string -> :string;
+let line public h signature = spell public + " " + h + " " + crypto.hex signature;
+
+/// A signature file with `entry` for its key, replacing that key's old line
+/// and keeping every other.
+let with_line : :string -> :string -> :string;
+let with_line text entry = {
+    let [k, .._] = str.words entry;
+    let kept = list.filter (fn l -> match str.words l {
+        [other, .._] => key_bytes other != key_bytes k || str.starts_with "#" other,
+        [] => false,
+    }) (str.split "\n" text);
+    let body = match kept { [] => [header], ks => ks };
+    str.join_str "\n" (list.append body [entry]) + "\n"
+};
+
+let header = "# Signatures over this package's tree hash, one per key. Written by `mind sign`.";
+
+/// Whether `text` -- a package's signature file, `()` when it has none --
+/// holds a signature of `h` by one of `keys`. `Result.ok key` names the key
+/// that signed; the error says what was wrong, since "unsigned", "signed by
+/// someone else" and "signed, but other bytes" each want a different fix.
+let check : [:string] -> :string -> (:string | :unit) -> Result :string :string;
+let check keys h text = {
+    let bad = list.filter (fn k -> key_bytes k == ()) keys;
+    let trusted = list.map key_bytes keys;
+    let found = match text { () => [], t => lines t };
+    let mine = list.filter (fn [k, _, _] -> list.contains (key_bytes k) trusted) found;
+    let valid [k, lh, s] =
+        lh == h && match crypto.unhex s {
+            () => false,
+            sig => crypto.ed25519_verify (key_bytes k) (message h) sig,
+        };
+    let trusting = "its entry trusts " + str.join_str ", " keys;
+    match [bad, text, mine, list.filter valid mine] {
+        [[b, .._], _, _, _] => Result.error ("`keys` holds `" + b + "`, which is not an ed25519: key"),
+        [_, _, _, [[k, _, _], .._]] => Result.ok k,
+        [_, (), _, _] => Result.error ("is not signed (it has no " + file_name + "), but " + trusting),
+        [_, _, [], _] => Result.error ("is not signed by a key " + trusting
+                                       + (if list.is_empty found { "" }
+                                          else { " (it is signed by " + str.join_str ", " (map list.head found) + ")" })),
+        [_, _, [[_, lh, _], .._], _] if lh != h =>
+            Result.error ("is signed as " + lh + ", but what arrived hashes to " + h),
+        _ => Result.error ("has a signature that does not verify -- it was altered, or made by another key"),
+    }
+};
+
+when test {
+    import std.test;
+
+    let seed = crypto.unhex "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb";
+    let other = crypto.unhex "c5aa8df43f9f837bedb7442f31dcb7b166d38535076f094b85ce3a2e0b4458f7";
+    let pub = crypto.ed25519_public seed;
+    let h = "sha256:" + str.repeat 64 "a";
+    let signed = with_line "" (line pub h (crypto.ed25519_sign seed (message h)));
+    let error_of r = match r { Result.error(why) => why, Result.ok(k) => "ok " + k };
+
+    let tests = [
+        test.case "a key is ed25519: and 32 bytes of hex"
+            $( test.eq! [pub, pub, (), (), ()]
+                        [key_bytes (spell pub), key_bytes ("ed25519:" + str.upper (crypto.hex pub)), key_bytes "ed25519:abcd",
+                         key_bytes ("rsa:" + crypto.hex pub), key_bytes ("ed25519:" + str.repeat 64 "z")] ),
+        test.case "keys may be one or several"
+            $( test.eq! [["a"], ["a", "b"], []] [listed "a", listed ["a", "b"], listed ()] ),
+        test.case "a trusted signature over the hash passes, and names its key"
+            $( test.eq! (Result.ok (spell pub)) (check [spell pub] h signed) ),
+        test.case "no signature file is said to be"
+            $( test.eq! true (str.find "has no mind.sig" (error_of (check [spell pub] h ())) >= 0) ),
+        test.case "a signature by someone else is said to be"
+            $( test.eq! true (str.find "not signed by a key"
+                                       (error_of (check [spell (crypto.ed25519_public other)] h signed)) >= 0) ),
+        test.case "other bytes than were signed are said to be"
+            $( test.eq! true (str.find "hashes to" (error_of (check [spell pub] ("sha256:" + str.repeat 64 "b") signed)) >= 0) ),
+        test.case "a signature over the hash, but not this message, fails"
+            $( test.eq! true (str.find "does not verify"
+                                       (error_of (check [spell pub] h (with_line "" (line pub h (crypto.ed25519_sign seed h)))))
+                              >= 0) ),
+        test.case "a key that is not one is reported, not ignored"
+            $( test.eq! true (str.find "not an ed25519" (error_of (check ["ed25519:xyz"] h signed)) >= 0) ),
+        test.case "signing again replaces that key's line and keeps the others"
+            $( test.eq! 3 (list.length (str.split "\n" (str.trim (with_line (with_line signed (spell (crypto.ed25519_public other) + " x y"))
+                                                                          (line pub h "z"))))) ),
+        test.case "a line of the wrong shape does not hide the next"
+            $( test.eq! (Result.ok (spell pub)) (check [spell pub] h ("junk\n" + signed)) ),
+    ];
+}
