@@ -592,6 +592,20 @@ the default, and only the root's profiles count. The image goes to
 `target/<profile>/<name>.dream`, with the platform first when a target is
 stated (`target/linux/release/`), so no build overwrites another's image.
 
+`debug = true` -- in `[build]` for every profile, or in a profile's section
+for that one, which says first -- builds the image with what a debugger
+reads: the name of each function's locals, so that `dream --debug` shows
+`items = [..]` rather than a slot number. It is off unless written, so a
+build that is only for running carries none of it:
+
+```toml
+[build]
+debug = true
+
+[profile.release]
+debug = false
+```
+
 ## Finding the compiler and the library
 
 The compiler is `--compiler`, then `[build] compiler`, then `$DREAMS`, then

@@ -1416,6 +1416,7 @@ let compile_args! m o =
               ["-o", output_of m o],
               manifest.compiler_flags m,
               manifest.profile_flags m (profile_of o),
+              manifest.debug_info_flags m (profile_of o),
               option o :extra [],
               option o :flags [],
             ]),
@@ -1516,6 +1517,7 @@ let repl_args m o settings =
         settings,
         manifest.compiler_flags m,
         manifest.profile_flags m (profile_of o),
+        manifest.debug_info_flags m (profile_of o),
         option o :flags [],
     ];
 

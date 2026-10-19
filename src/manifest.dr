@@ -204,6 +204,21 @@ let payload_problem m =
 /// name yet. An escape hatch, and deliberately last on the command line.
 let compiler_flags m = build_list m "flags";
 
+/// Whether the program is built with what a debugger reads -- the names of
+/// its functions' locals, for `dream --debug` -- which only a build that asks
+/// carries: `debug = true` in the profile's section, or in `[build]` for
+/// every profile. The profile's says first, so `[profile.release] debug =
+/// false` turns off what `[build]` turned on.
+let debug_info : :map -> :string -> :bool;
+let debug_info m profile = match toml.get () (doc m) ("profile." + profile) "debug" {
+    () => toml.get () (doc m) "build" "debug" == true,
+    v => v == true,
+};
+
+/// The compiler's flag for it, when it is asked for.
+let debug_info_flags : :map -> :string -> [:string];
+let debug_info_flags m profile = if debug_info m profile { ["--debug-info"] } else { [] };
+
 /// Which compiler to run. `()` when the manifest does not say, and the
 /// environment or the command line decides.
 /// A path (anything with a `/` in it) is the manifest's, as every other path
@@ -624,6 +639,15 @@ when test {
         test.case "a profile's config is its own"
             $( test.eq! [["x", %{ "a" => 1 }]]
                         (profile_configs (of "[config.sqlite]\nt = 1\n[profile.release.config.x]\na = 1") "release") ),
+        test.case "debug information only where it is asked for"
+            $( test.eq! [false, true, true, false, true]
+                        [debug_info (of "") "debug",
+                         debug_info (of "[build]\ndebug = true\n") "debug",
+                         debug_info (of "[build]\ndebug = true\n") "release",
+                         debug_info (of "[build]\ndebug = true\n[profile.release]\ndebug = false\n") "release",
+                         debug_info (of "[profile.debug]\ndebug = true\n") "debug"] ),
+        test.case "the compiler is asked for it with --debug-info"
+            $( test.eq! [[], ["--debug-info"]] [debug_info_flags (of "") "debug", debug_info_flags (of "[build]\ndebug = true\n") "debug"] ),
         test.case "declared profiles, and the two that always exist"
             $( test.eq! [["bench"], true, true, false]
                         { let m = of "[profile.bench]\nflags = [\"-q\"]";
