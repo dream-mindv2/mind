@@ -4,6 +4,7 @@
 //   mind init [name]    make this directory one
 //   mind build          compile it
 //   mind build GOAL..   make what its build script names: `mind build vm`
+//   mind install [SOURCE] build and install this package, a directory or Git URL
 //   mind run [args]     compile and run it
 //   mind run FILE.dr    compile and run one file, project or not
 //   mind test           compile with `--test` and run the result
@@ -23,6 +24,7 @@ import std.char;
 import std.cli;
 import std.console;
 import std.crypto;
+import std.error;
 
 import std.file;
 import std.io;
@@ -71,11 +73,11 @@ let opts = [
     cli.list_of "" "target" "PLATFORM" "where the image may run: linux, os=macos,arch=arm64, any",
     cli.list_of "f" "flag" "ARG" "pass this to the compiler as written",
 
-    cli.section "adding a dependency",
-    cli.value "" "name" "NAME" "import it as NAME (default: from its manifest or its source)",
-    cli.value "" "tag" "TAG" "pin a git dependency to a tag",
-    cli.value "" "branch" "BRANCH" "pin a git dependency to a branch",
-    cli.value "" "rev" "REV" "pin a git dependency to a commit",
+    cli.section "package names and sources",
+    cli.value "" "name" "NAME" "dependency import name or installed program name (default: from its manifest)",
+    cli.value "" "tag" "TAG" "select a Git tag for add or install",
+    cli.value "" "branch" "BRANCH" "select a Git branch for add or install",
+    cli.value "" "rev" "REV" "select a Git commit for add or install",
     cli.flag "" "dev" "a [dev-dependencies] entry: only `mind test` sees it",
     cli.list_of "" "key" "ed25519:HEX" "use only releases this key signed (may be given more than once)",
 
@@ -98,6 +100,7 @@ let command_spec = [
     cli.command "init"  "make this directory a project, named after it or [name]" [],
     cli.command "build" "compile the project; GOAL.. makes what its build script names instead"
         [cli.flag "" "precompile" "hand `--precompile` to the VM that runs the compiler"],
+    cli.command "install" "build and install this package, DIR, Git URL, or github:USER/REPO for dream -x NAME" [],
     cli.command "run"   "compile, then run it with the arguments given; FILE.dr runs that file alone" [],
     cli.command "test"  "run every test at once: units and checks; NAME narrows" [],
     cli.command "check" "compile without writing an image" [],
@@ -143,6 +146,9 @@ let notes = "
 A project is a directory with a `mind.toml`, its modules in `src/` beside it.
 Commands other than `new` and `init` look for one here or above, so they work
 from anywhere inside a project; `-C DIR` runs as if `mind` were started in DIR.
+`mind install SOURCE` also works outside a project: SOURCE is a directory,
+a Git URL, or github:USER/REPO. Bare `mind install` installs the current
+package. Run the installed program with `dream -x NAME`; --name chooses NAME.
 
 Listing a dependency is all it takes to import it. The key is the name you
 import it by, whatever the package calls itself:
@@ -384,6 +390,109 @@ let relay! r =
 let cmd_build! m o = {
     report_build! m o "compiled" false
     console.print! ("  " + to_string (build.output_of m o))
+};
+
+/// Expand GitHub's shorthand before using the ordinary source parser.
+let install_source : :string -> Result :string :string;
+let install_source source =
+    if not (str.starts_with "github:" source) { Result.ok source }
+    else {
+        let [repo, ref] = manifest.split_ref (str.trim_prefix "github:" source);
+        let segment s = s != "" && s != "." && s != ".."
+            && str.all (fn c -> char.is_alnum c || c == '-' || c == '_' || c == '.') s;
+        match str.split "/" repo {
+            [owner, project] if segment owner && segment project =>
+                Result.ok ("https://github.com/" + owner + "/" + str.trim_suffix ".git" project + ".git"
+                           + match ref { () => "", r => "#" + r }),
+            _ => Result.error "use github:USER/REPO, optionally followed by #REF",
+        }
+    };
+
+/// Install a successful build by rename, so a running or previously installed
+/// image is never truncated. A bare image wins over `.dream` in the VM's
+/// lookup, so an existing bare installation is replaced at that spelling.
+let install_package! : :map -> :map -> (:string | :unit) -> Result :string :string;
+let install_package! m o given = {
+    let name = match given { () => manifest.name m, n => n };
+    if not (manifest.is_package m) { Result.error "install needs a package, not a workspace alone" }
+    else if not (path.is_program_name name) { Result.error "the installed program name must be one nonempty path component" }
+    else {
+        match path.dream_dir! () {
+            () => Result.error "no Dream installation directory is available; set MINDV2_PATH or HOME",
+            dir => {
+                let bare = path.join dir name;
+                let dest = if file.is_file! bare { bare } else { bare + ".dream" };
+                let output = build.output_of m o;
+                if path.same_file! output dest { Result.error "the build output must differ from the installed image" }
+                else if file.is_dir! dest { Result.error ("the installation destination is a directory: " + dest) }
+                else {
+                    let? _ = build.compile! m o;
+                    file.mkdir_all! dir
+                    let scratch = file.temp_file_in! dir ".mind-install-";
+                    let result = try! {
+                        file.copy! output scratch
+                        io.rename! scratch dest
+                        Result.ok dest
+                    } catch e { Result.error (error.describe e) };
+                    strict! result
+                    file.remove_all! scratch
+                    result
+                }
+            },
+        }
+    }
+};
+
+/// Every explicit source builds into a fresh temporary directory. Local
+/// source paths stay in place so relative dependencies still resolve; Git
+/// gets a checkout here too. The lock is read but not written back.
+let install_from! : :string -> :map -> :map -> (:string | :unit) -> Result :string :string;
+let install_from! source spec o given = {
+    let dependency = [guessed_name source, spec];
+    if build.option o :output () != () {
+        Result.error "source installs use temporary output; --output is available for bare mind install"
+    } else {
+        let scratch = file.temp_dir! ();
+        let checkout = path.join scratch "source";
+        let temporary = o.[:output => path.join scratch "program.dream"]
+                         .[:target_dir => path.join scratch "target"].[:write_lock => false];
+        let result = try! {
+            let? dir = match manifest.dep_kind dependency {
+                :path => Result.ok (path.absolute! (path.expand_home! (spec.["path"]))),
+                :git => { let? _ = fetch.git_clone! dependency checkout; Result.ok checkout },
+                :url => { let? _ = fetch.url_fetch! dependency checkout; Result.ok checkout },
+                _ => Result.error "install needs a directory or Git URL",
+            };
+            let? m = manifest.load! dir;
+            let? _ = build.trust! (build.trust_context! m) dependency dir;
+            install_package! m temporary given
+        } catch e { Result.error (error.describe e) };
+        strict! result
+        file.remove_all! scratch
+        result
+    }
+};
+
+let cmd_install! : :map -> :map -> [:string] -> :unit;
+let cmd_install! o c args = {
+    let given = cli.get () c "name";
+    let result = try! {
+        match args {
+            [] => install_package! (project! ()) o given,
+            [source] => {
+                let? expanded = install_source source;
+                install_from! expanded (add_spec! expanded c) o given
+            },
+            _ => Result.error "install takes at most one source: DIR, Git URL, or github:USER/REPO",
+        }
+    } catch e { Result.error (error.describe e) };
+    match result {
+        Result.error(why) => fail! why,
+        Result.ok(dest) => {
+            console.print! ("installed " + dest)
+            console.print! ("  dream -x " + match given { () => str.trim_suffix ".dream" (path.basename dest), n => n })
+        },
+    }
 };
 
 /// `mind build GOAL..`: what the project's build script makes by name rather
@@ -710,9 +819,9 @@ let cmd_update! m o names = {
     let unknown = filter (fn k -> not (list.any (fn n -> build.node_key n == k) every)) names;
     if not (list.is_empty unknown) { fail! ("no dependency is called " + str.join_str ", " unknown) }
     strict! (map (fn n -> match fetch.forget! (build.node_dep n) {
-                          Result.error(why) => fail! why,
-                          _ => :ok,
-                      }) chosen)
+        Result.error(why) => fail! why,
+        _ => :ok,
+    }) chosen)
     match build.resolve! m (build.with_option :dev true o) true { Result.error(why) => fail! why, _ => () }
     match chosen {
         [] => console.print! "nothing to update: every dependency is a directory",
@@ -1757,6 +1866,7 @@ let run_command! c theirs = {
                       [] => cmd_build! (project! ()) o,
                       names => cmd_goals! (project! ()) o names,
                   },
+                  "install" => cmd_install! o c (cli.rest c),
                   "check" => cmd_check! (project! ()) o,
                   "run"   => match cli.rest c {
                                  [file, ..args] if names_source! file =>

@@ -910,8 +910,10 @@ let resolve! m o accept = {
                     // or an edge whose condition is off in this build -- keeps
                     // what the lock says about it.
                     let complete = option o :dev false && list.is_empty (g.[:off else []]);
-                    lock.save! root (lock.merge before (list.append now (map (fn [k, src] -> lock.revocation k src) fresh))
-                                                complete)
+                    if option o :write_lock true {
+                        lock.save! root (lock.merge before (list.append now (map (fn [k, src] -> lock.revocation k src) fresh))
+                                                    complete)
+                    }
                     ok g
                 },
             }
@@ -1079,6 +1081,10 @@ let search_paths! m o =
 
 let target_dir m = path.join (manifest.root m) "target";
 
+/// Source installs keep generated files and script drivers in a temporary
+/// directory while resolving source paths and dependencies from the package.
+let work_dir m o = option o :target_dir (target_dir m);
+
 // --- what one build is --------------------------------------------------------
 //
 // A build is the manifest plus whatever this invocation added. Keeping that in
@@ -1114,8 +1120,8 @@ let output_of m o =
         () => match manifest.output m {
             () => {
                 let under = match target_subdir (targets m o) {
-                    () => target_dir m,
-                    dir => path.join (target_dir m) dir,
+                    () => work_dir m o,
+                    dir => path.join (work_dir m o) dir,
                 };
                 path.join (path.join under (profile_of o)) (manifest.name m + ".dream")
             },
@@ -1276,7 +1282,7 @@ let script_target o m = match targets m o {
 let script_setting! m o g = {
     // Absolute, since a check runs them from a directory of its own.
     let placed! p = if str.contains_str "/" p { path.absolute! p } else { p };
-    script.Setting.make (target_dir m)
+    script.Setting.make (work_dir m o)
         (match compiler_command! o (choose_compiler! m (option o :compiler ())) {
              [program, lead] => map placed! (list.cons program lead),
          })

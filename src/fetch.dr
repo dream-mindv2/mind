@@ -72,6 +72,16 @@ let run! what program args = {
 };
 
 let git_fetch! d dir = {
+    match manifest.dep_rev d {
+        [:none, _] => Result.error "needs `tag`, `rev` or `branch` -- an unpinned git dependency is not reproducible",
+        _ => git_clone! d dir,
+    }
+};
+
+/// A fresh checkout for an explicit install. Unlike a dependency, a program
+/// requested at the command line may ask for the default branch's current
+/// HEAD. Dependencies still go through `git_fetch!` and require a pin.
+let git_clone! d dir = {
     let url = to_string (manifest.spec_get d "git");
     let rev = manifest.dep_rev d;
     // `--depth 1` against a tag or branch; a bare revision needs history to
@@ -82,10 +92,8 @@ let git_fetch! d dir = {
         // A bare revision needs history to find, so this one clones fully and
         // checks out below.
         [:rev, _] => run! "git clone" "git" ["clone", "--quiet", url, dir],
-        // Refusing an unpinned dependency is the point. "Whatever is on the
-        // default branch today" is not a dependency, it is a moving target,
-        // and the build that breaks next week will not say why.
-        _ => Result.error "needs `tag`, `rev` or `branch` -- an unpinned git dependency is not reproducible",
+        // Only explicit source installs can take this branch.
+        _ => run! "git clone" "git" ["clone", "--quiet", "--depth", "1", "--", url, dir],
     };
     match cloned {
         Result.error(why) => Result.error why,

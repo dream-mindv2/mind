@@ -110,6 +110,7 @@ Given twice, the second is relative to the first.
 | `mind init [NAME]` | make this directory a project, named after it unless NAME is given; a `main.dr` or `src/` already there is kept |
 | `mind build` | compile to `target/<profile>/<name>.dream` |
 | `mind build GOAL..` | make what the build script names instead ([Goals](#goals)) |
+| `mind install [SOURCE]` | build and install the current package, a directory, Git URL, or `github:USER/REPO` for `dream -x NAME` |
 | `mind run [-- args]` | compile, then run with the arguments given |
 | `mind run FILE.dr [args]` | compile and run one file on its own, with the standard library and the modules beside it; no project needed |
 | `mind test [NAME..]` | run every test at once: each package's units and its build script's checks |
@@ -147,6 +148,37 @@ Given twice, the second is relative to the first.
 `mind build --precompile` is the one option that is the VM's rather than the
 compiler's: it hands `--precompile` to the VM that runs `dreams`, so every
 function the JIT can take is compiled before the build starts.
+
+`mind install` builds the current package with the usual build settings and
+installs `<name>.dream` in `path.dream_dir! ()`, the first directory used by
+`dream -x` (`MINDV2_PATH`, the VM's packaged installation, or `~/.mindv2`).
+Use `--release` or `--profile NAME` to choose a different profile, and
+`--name NAME` to choose the installed program's name:
+
+```sh
+mind install
+mind install ../my-tool --release
+mind install https://github.com/user/tool.git
+mind install github:user/tool --name my-tool
+mind install github:user/tool#v1.0
+mind install github:user/tool --branch main
+dream -x my-tool
+```
+
+An unpinned Git source takes the default branch's current HEAD; `#REF`,
+`--tag`, `--branch`, and `--rev` select a revision. Each remote install gets
+a fresh checkout, and `--key` checks a source's signature as it does for a
+dependency. Dependencies still require their ordinary pins and lock checks.
+An explicit source builds its image, generated modules, and script drivers
+in a temporary directory, cleaned up on success or failure. Local sources
+and relative dependencies are read in place; their lockfiles are read but
+not rewritten. A manifest's output path is ignored for these temporary
+builds; `--output` is available for bare `mind install` only.
+
+Installing again replaces the previous image after a successful build, by
+rename. A failed build leaves the installed image intact. Existing bare
+images are replaced at their original spelling so they cannot shadow a new
+`.dream` image.
 
 ## Dependencies
 
