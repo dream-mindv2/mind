@@ -2,6 +2,6 @@
 # packages on disk that `mind test mind` runs after the units.
 [package]
 name = "mind"
-version = "0.1.0"
+version = "0.2.0"
 repository = "https://github.com/dream-mindv2/mind"
 description = "The Dream build tool"

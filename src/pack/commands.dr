@@ -48,7 +48,7 @@ import pack.sums;
 import pack.item;
 import pack.tarball;
 
-let version : :string = "0.1.0";
+let version : :string = "0.2.0";
 
 let opts = [
     cli.section "what to package",

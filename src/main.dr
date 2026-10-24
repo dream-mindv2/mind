@@ -53,7 +53,7 @@ import manifest;
 import sign;
 import util;
 
-let version = "0.1.0";
+let version = "0.2.0";
 
 /// The options, described once. `cli` parses from this list and prints the
 /// help from the same list, so an option cannot be one without being the
