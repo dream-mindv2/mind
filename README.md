@@ -108,10 +108,10 @@ Given twice, the second is relative to the first.
 |---|---|
 | `mind new NAME` | create a project in `./NAME` |
 | `mind init [NAME]` | make this directory a project, named after it unless NAME is given; a `main.dr` or `src/` already there is kept |
-| `mind build` | compile to `target/<profile>/<name>.dream` |
+| `mind build` | compile to `target/<profile>/<name>.dream`; an application, to `target/<profile>/<name>/` ([Applications](#applications)) |
 | `mind build GOAL..` | make what the build script names instead ([Goals](#goals)) |
 | `mind install [SOURCE]` | build and install the current package, a directory, Git URL, or `github:USER/REPO` for `dream -x NAME` |
-| `mind run [-- args]` | compile, then run with the arguments given |
+| `mind run [-- args]` | compile, then run with the arguments given; an application is served on 127.0.0.1, or opened in a window with `--desktop` |
 | `mind run FILE.dr [args]` | compile and run one file on its own, with the standard library and the modules beside it; no project needed |
 | `mind test [NAME..]` | run every test at once: each package's units and its build script's checks |
 | `mind check` | compile without writing an image |
@@ -606,6 +606,33 @@ debug = true
 debug = false
 ```
 
+## Applications
+
+A package with a `[graphics]` section is a std.graphics application: its
+program is the frontend, which runs in a page on the browser VM, and `mind
+build` makes the whole of it -- `assets/`, a static site holding the page, its
+scripts, the browser VM and the frontend compiled for any VM, and
+`backend.dream` beside it when there is a backend.
+
+```toml
+[graphics]
+backend = "src/backend.dr"            # a native Dream backend, for the desktop
+js = ["web/chart.mjs"]                # the application's own modules
+css = ["web/theme.css"]               # and stylesheets
+assets = ["images"]                   # files and directories, shipped as they are
+connect = ["https://api.example.com"] # origins the page may fetch from
+base = "/"                            # where it is served, when routes are paths
+```
+
+`mind run` builds it and serves `assets/` on 127.0.0.1 (`--port`, default
+8000), answering a path that names no file with the page, so a route reloads;
+`mind run --desktop` opens it in a window instead, backend and all, through
+`dream --graphics`, which needs a VM built with the desktop host. The page's
+own files come with the standard library; the browser VM is `--runtime DIR`,
+then `[graphics] runtime`, then `$DREAM_BROWSER`, then the installation's
+`browser/`, then a `build-browser/` at or above the working directory.
+mind/std/docs/graphics.md is the guide.
+
 ## Finding the compiler and the library
 
 The compiler is `--compiler`, then `[build] compiler`, then `$DREAMS`, then
@@ -629,6 +656,7 @@ on.
 | `DREAM` | the VM that runs images (default `dream`) |
 | `MINDV2_PATH` | the installation: where `dreams.dream` is found |
 | `MIND_STDLIB` | the directory holding `std` |
+| `DREAM_BROWSER` | the browser VM an application ships: a directory holding `dream-browser.mjs` and `.wasm` |
 | `MIND_HOME` | fetched packages, the build cache and the unit cache (default `~/.mind`) |
 | `MIND_INDEXES` | the indexes to look names up in, before `[fetch] indexes`; `none` for none |
 | `MIND_INDEX_MAX_AGE` | how old an index's newest checkpoint may be, overriding its keepers (`14d`; `0` for no limit) |
@@ -652,6 +680,7 @@ whose checks `mind test mind` runs after the units.
 | `sign.dr` | signed releases: keys, `mind.sig`, and what is signed |
 | `docs.dr`, `documentation/` | `mind docs`: guides, API pages, examples run, links, the theme |
 | `serve.dr` | `mind serve` and `mind docs serve` |
+| `graphics.dr` | `[graphics]`: an application made, and the page's policy |
 | `pack/` | `mind pack` and every package format it writes |
 | `config.dr`, `util.dr` | settings, paths and files |
 

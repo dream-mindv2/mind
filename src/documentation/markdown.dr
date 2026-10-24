@@ -3,7 +3,7 @@ import std.list;
 import std.str;
 import std.map;
 
-let escape text = text |> str.replace "&" "&amp;" |> str.replace "<" "&lt;" |> str.replace ">" "&gt;" |> str.replace "\"" "&quot;" |> str.replace "'" "&#39;";
+let escape text = str.escape_html text;
 let tail n s = str.slice n (len s - n) s;
 let slug s = {
     let chars = str.chars (str.lower s);

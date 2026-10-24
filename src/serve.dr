@@ -34,6 +34,7 @@ let opts = [
     cli.flag "" "list" "list the entries of a directory that has no index.html",
     cli.flag "" "dotfiles" "serve names that start with a dot",
     cli.flag "q" "quiet" "do not log each request",
+    cli.value "" "fallback" "FILE" "a file under DIR that answers a path naming nothing, such as index.html for an application whose routes are paths",
 ];
 
 let usage = "mind serve -- serve a directory over HTTP, on this machine\n\nusage: mind serve [options] [DIR]\n\n"
@@ -80,7 +81,8 @@ let serve! c dir what = {
     let o = options! c;
     let files = server.Static.new ()
         |> server.Static.set_listing (cli.flag_set c "list")
-        |> server.Static.set_dotfiles (cli.flag_set c "dotfiles");
+        |> server.Static.set_dotfiles (cli.flag_set c "dotfiles")
+        |> server.Static.set_fallback (cli.get "" c "fallback");
     let app = server.static! files (path.absolute! dir);
     let logged = if cli.flag_set c "quiet" { app } else { server.logged! (log.named "serve" (log.default! ())) app };
     let s = match try! { let s = server.serve_with! o logged; strict! s; Result.ok s } catch e { Result.error e } {

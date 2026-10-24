@@ -1,0 +1,283 @@
+// `[graphics]`: a package that is a std.graphics application.
+//
+// Such a package's program is its frontend, compiled for any VM and run in a
+// page by the browser VM; `mind build` makes the whole application from it,
+// and `mind run` serves it, or opens it in a window. The section says what
+// else ships beside the program and nothing about how a page is put together:
+//
+//     [graphics]
+//     backend = "src/backend.dr"     # a native Dream backend, for the desktop
+//     js = ["web/chart.mjs"]         # the application's own modules ..
+//     css = ["web/theme.css"]        # .. and stylesheets
+//     assets = ["images"]            # files and directories shipped as they are
+//     connect = ["https://api.example.com"]  # origins the page may fetch from
+//     base = "/"                     # where the page is served, when routes are paths
+//
+// What it makes is a directory, `target/<profile>/<name>/`: `assets/` is a
+// static site -- the page, its scripts, the browser VM and `frontend.dream` --
+// and `backend.dream` beside it when there is one. `dream --graphics DIR` runs
+// the two together.
+//
+// The page's content security policy allows scripts, styles, images, fonts and
+// media from the application itself, and fetches from its own origin and each
+// `connect` origin -- nothing else. It is written once, into index.html and
+// csp.txt (which the desktop host sends as a header), so the two never
+// disagree.
+//
+// Two things come from outside the package. The page's own files are the
+// standard library's (`std/graphics/web`), found where `mind` finds the
+// library, so a page always matches the std.graphics that compiled the
+// program. The browser VM is a build of the VM (`just graphics-browser`): the
+// command line's `--runtime`, `[graphics] runtime`, `$DREAM_BROWSER`, the
+// installation's `browser/`, and then a `build-browser/` at or above here,
+// which is where a checkout of the repository keeps it.
+
+import std.console;
+import std.file;
+import std.install;
+import std.io;
+import std.json;
+import std.list;
+import std.os;
+import std.path;
+import std.regex;
+import std.str;
+import std.toml;
+
+import build;
+import manifest;
+
+/// What `[graphics]` says, every path made absolute.
+mapping App {
+    frontend : :string = ""
+    backend : :any = ()
+    js : [:string] = []
+    css : [:string] = []
+    assets : [:string] = []
+    connect : [:string] = []
+    base : :string = "./"
+    runtime : :any = ()
+}
+
+/// Whether the package is an application.
+let is_app : :map -> :bool;
+let is_app m = (manifest.doc m).["graphics" else ()] != ();
+
+/// A list-valued key, a single item allowed for a list of one.
+priv let listed m key = match toml.get () (manifest.doc m) "graphics" key {
+    () => [],
+    v => match type_of v { :list => v, _ => [v] },
+};
+
+priv let at m p = path.join (manifest.root m) p;
+
+/// The section as an `App`, its paths relative to the manifest.
+let app! : :map -> App;
+let app! m = {
+    let get key = toml.get () (manifest.doc m) "graphics" key;
+    App.new ()
+        |> App.set_frontend (match get "frontend" { () => manifest.entry! m, f => at m f })
+        |> App.set_backend (match get "backend" { () => (), b => at m b })
+        |> App.set_js (list.map (at m) (listed m "js"))
+        |> App.set_css (list.map (at m) (listed m "css"))
+        |> App.set_assets (list.map (at m) (listed m "assets"))
+        |> App.set_connect (listed m "connect")
+        |> App.set_base (match get "base" { () => "./", b => b })
+        |> App.set_runtime (match get "runtime" { () => (), r => at m r })
+};
+
+/// The runtime's own files, and the application's, share one directory; an
+/// application file may not take a runtime file's name.
+let reserved : [:string];
+let reserved = ["index.html", "main.mjs", "dom.mjs", "worker.mjs", "dream-browser.mjs", "dream-browser.wasm",
+                "frontend.dream", "app.json", "csp.txt"];
+
+/// What is wrong with the section, or `()`.
+let problem! : App -> :string | :unit;
+let problem! app = {
+    let files = list.concat [[App.frontend app], match App.backend app { () => [], b => [b] }, App.js app, App.css app];
+    let shipped = list.concat [App.js app, App.css app, App.assets app];
+    let names = list.map path.basename shipped;
+    match [list.find (fn f -> not (file.is_file! f)) files,
+           list.find (fn a -> not (io.exists! a)) (App.assets app),
+           list.find (fn n -> list.contains n reserved) names,
+           list.find (fn n -> list.length (list.filter (fn o -> o == n) names) > 1) names,
+           list.find (fn o -> not (regex.matches (regex.compile "(https?|wss?)://[A-Za-z0-9.-]+(:[0-9]+)?") o)) (App.connect app)] {
+        [f, _, _, _, _] if f != () => "[graphics]: no such file: " + f,
+        [_, a, _, _, _] if a != () => "[graphics]: no such asset: " + a,
+        [_, _, n, _, _] if n != () => "[graphics]: " + n + " would replace the page's own file of that name; rename it",
+        [_, _, _, n, _] if n != () => "[graphics]: two files are shipped as " + n,
+        [_, _, _, _, o] if o != () => "[graphics]: connect wants origins such as https://api.example.com, not " + o,
+        _ => if regex.matches (regex.compile "\\./|/([A-Za-z0-9._~-]+/)*") (App.base app) { () }
+             else { "[graphics]: base is ./ or an absolute path ending in /, such as /app/" },
+    }
+};
+
+/// Where the application is made: `--output` as written, or
+/// `target/<profile>/<name>/`.
+let dir_of : :map -> :map -> :string;
+let dir_of m o = match build.option o :output () {
+    () => path.join_all (build.work_dir m o) [build.profile_of o, manifest.name m],
+    p => p,
+};
+
+/// The directory holding `dream-browser.mjs` and `.wasm`, or why there is none.
+let runtime! : :map -> App -> Result :string :string;
+let runtime! o app = {
+    let holds! dir = dir != () && file.is_file! (path.join dir "dream-browser.wasm")
+        && file.is_file! (path.join dir "dream-browser.mjs");
+    let installed = match install.holding! "browser/dream-browser.wasm" { () => (), d => path.join d "browser" };
+    let checkout = above! (os.cwd! ()) "build-browser";
+    let named = [build.option o :runtime (), App.runtime app, path.from_env! "DREAM_BROWSER"];
+    match list.find (fn d -> d != ()) named {
+        () => match (if holds! installed { installed } else if holds! checkout { checkout } else { () }) {
+            () => Result.error ("no browser VM to ship: build one (`just graphics-browser` in the Dream repository), "
+                                + "or name its directory with --runtime, [graphics] runtime or $DREAM_BROWSER"),
+            d => Result.ok d,
+        },
+        d => if holds! d { Result.ok d } else { Result.error (d + " holds no dream-browser.mjs and dream-browser.wasm") },
+    }
+};
+
+/// The nearest `name` directory at or above `from` that holds a browser VM.
+priv let rec above! from name = {
+    let candidate = path.join from name;
+    if file.is_file! (path.join candidate "dream-browser.wasm") { candidate }
+    else {
+        let up = path.dirname from;
+        if up == from || up == "." { () } else { above! up name }
+    }
+};
+
+/// The page's content security policy.
+let csp : App -> :string;
+let csp app = str.join_str "; " [
+    "default-src 'none'",
+    "script-src 'self' 'wasm-unsafe-eval'",
+    "worker-src 'self'",
+    str.join_str " " (list.append ["connect-src", "'self'"] (App.connect app)),
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob:",
+    "font-src 'self' data:",
+    "media-src 'self' blob:",
+    "base-uri 'none'",
+    "form-action 'none'",
+];
+
+/// The page: the library's template with the policy, the stylesheets and the
+/// base filled in.
+let page : :string -> App -> :string;
+let page template app = {
+    let base = App.base app;
+    let links = str.concat_all (list.map (fn c -> "<link rel=\"stylesheet\" href=\"" + base
+        + str.escape_html (path.basename c) + "\">") (App.css app));
+    template |> str.replace "{{csp}}" (str.escape_html (csp app)) |> str.replace "{{styles}}" links
+        |> str.replace "{{base}}" base
+};
+
+/// Build the application, answering where it is. It is made beside where it
+/// goes and renamed into place, so a failed build leaves the last one as it
+/// was, and nothing is ever half an application.
+let build! : :map -> :map -> Result :string :string;
+let build! m o = {
+    let app = app! m;
+    let? _ = match problem! app { () => Result.ok (), why => Result.error why };
+    let? runtime = runtime! o app;
+    let web = path.join_all (build.stdlib_root! ()) ["std", "graphics", "web"];
+    let? _ = if file.is_file! (path.join web "index.html") { Result.ok () }
+             else { Result.error ("the standard library has no std.graphics page at " + web) };
+    let out = dir_of m o;
+    let parent = path.dirname (path.absolute! out);
+    file.mkdir_all! parent
+    let staging = file.temp_dir_in! parent ("." + path.basename out + "-");
+    let made = try! { assemble! m o app runtime web staging } catch e { Result.error (to_string e) };
+    strict! made
+    match made {
+        Result.ok(_) => {
+            file.remove_all! out
+            io.rename! staging out
+            Result.ok out
+        },
+        Result.error(why) => {
+            file.remove_all! staging
+            Result.error why
+        },
+    }
+};
+
+priv let assemble! m o app runtime web staging = {
+    let assets = path.join staging "assets";
+    file.mkdir_all! assets
+    // The frontend is bytecode, so it runs wherever a browser does.
+    let? _ = build.compile! m (o |> build.with_option :entry (App.frontend app)
+                                 |> build.with_option :output (path.join assets "frontend.dream")
+                                 |> build.with_option :targets ["any"]);
+    let? _ = match App.backend app {
+        () => Result.ok "",
+        b => build.compile! m (o |> build.with_option :entry b |> build.with_option :output (path.join staging "backend.dream")),
+    };
+    list.each! (fn n -> file.copy! (path.join web n) (path.join assets n)) ["main.mjs", "dom.mjs", "worker.mjs"]
+    list.each! (fn n -> file.copy! (path.join runtime n) (path.join assets n)) ["dream-browser.mjs", "dream-browser.wasm"]
+    list.each! (fn f -> file.copy! f (path.join assets (path.basename f))) (list.append (App.js app) (App.css app))
+    list.each! (fn a -> ship! a (path.join assets (path.basename a))) (App.assets app)
+    let template = match file.read! (path.join web "index.html") { () => "", t => t };
+    file.write! (path.join assets "index.html") (page template app)
+    file.write! (path.join assets "app.json") (json.encode %{
+        "js" => list.map path.basename (App.js app), "css" => list.map path.basename (App.css app)
+    } + "\n")
+    file.write! (path.join assets "csp.txt") (csp app + "\n")
+    Result.ok staging
+};
+
+/// A file, or a directory and everything in it, copied to `to`.
+priv let ship! from to = if file.is_dir! from {
+    list.each! (fn rel -> {
+        file.mkdir_all! (path.dirname (path.join to rel))
+        file.copy! (path.join from rel) (path.join to rel)
+    }) (file.walk! from)
+} else { file.copy! from to };
+
+when test {
+    import std.test;
+
+    let of text = manifest.make "/app" (toml.parse_or %{} text);
+
+    let tests = [
+        test.case "a package is an application by its section alone" $( test.eq! [true, false]
+            [is_app (of "[package]\nname = \"a\"\n[graphics]\n"), is_app (of "[package]\nname = \"a\"\n")] ),
+        test.case "paths are the manifest's, and a single item is a list of one" $( {
+            let app = app! (of "[package]\nname = \"a\"\nentry = \"ui.dr\"\n[graphics]\nbackend = \"b.dr\"\njs = \"w.mjs\"\ncss = [\"t.css\"]\n");
+            test.eq! ["/app/b.dr", ["/app/w.mjs"], ["/app/t.css"], "./"]
+                [App.backend app, App.js app, App.css app, App.base app]
+        } ),
+        test.case "the policy allows the application and its connect origins, nothing else" $( {
+            let policy = csp (App.new () |> App.set_connect ["https://api.example.com"]);
+            test.true! (str.contains_str "connect-src 'self' https://api.example.com;" policy)
+            test.true! (str.starts_with "default-src 'none'" policy)
+        } ),
+        test.case "the page is the template filled in, its stylesheets linked from the base" $( {
+            let app = App.new () |> App.set_base "/" |> App.set_css ["x/a&b.css"];
+            test.eq! ("<meta content=\"" + str.escape_html (csp app) + "\"><base href=\"/\"><link rel=\"stylesheet\" href=\"/a&amp;b.css\">")
+                (page "<meta content=\"{{csp}}\"><base href=\"{{base}}\">{{styles}}" app)
+        } ),
+        test.case "what the section may not say" $( {
+            let why! app = match problem! app { () => "", w => w };
+            let real = file.temp_dir! ();
+            let main = path.join real "main.dr";
+            file.write! main ""
+            file.write! (path.join real "index.html") ""
+            let ok = App.new () |> App.set_frontend main;
+            let got = [why! ok,
+                       why! (App.set_frontend (path.join real "none.dr") ok),
+                       why! (App.set_assets [path.join real "index.html"] ok),
+                       why! (App.set_connect ["https://x.example/path"] ok),
+                       why! (App.set_base "app/" ok)];
+            strict! got
+            file.remove_all! real
+            test.eq! [true, true, true, true, true]
+                [list.head got == "", str.contains_str "no such file" (list.nth 1 got),
+                 str.contains_str "page's own file" (list.nth 2 got), str.contains_str "origins" (list.nth 3 got),
+                 str.contains_str "base is" (list.nth 4 got)]
+        } ),
+    ];
+}

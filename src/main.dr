@@ -45,6 +45,7 @@ import pack.commands;
 import docs;
 import serve;
 import build;
+import graphics;
 import config;
 import fetch;
 import index;
@@ -99,9 +100,13 @@ let command_spec = [
     cli.command "new"   "create a project in ./<name>" [],
     cli.command "init"  "make this directory a project, named after it or [name]" [],
     cli.command "build" "compile the project; GOAL.. makes what its build script names instead"
-        [cli.flag "" "precompile" "hand `--precompile` to the VM that runs the compiler"],
+        [cli.flag "" "precompile" "hand `--precompile` to the VM that runs the compiler",
+         cli.value "" "runtime" "DIR" "a graphics application: the browser VM to ship (default: as [graphics] says)"],
     cli.command "install" "build and install this package, DIR, Git URL, or github:USER/REPO for dream -x NAME" [],
-    cli.command "run"   "compile, then run it with the arguments given; FILE.dr runs that file alone" [],
+    cli.command "run"   "compile, then run it with the arguments given; FILE.dr runs that file alone"
+        [cli.flag "" "desktop" "a graphics application: open it in a window rather than serve it",
+         cli.value "" "port" "PORT" "a graphics application: the port to serve it on (default: 8000)",
+         cli.value "" "runtime" "DIR" "a graphics application: the browser VM to ship (default: as [graphics] says)"],
     cli.command "test"  "run every test at once: units and checks; NAME narrows" [],
     cli.command "check" "compile without writing an image" [],
     cli.command "repl"  "deprecated interactive session, with this project's packages" [],
@@ -387,9 +392,43 @@ let relay! r =
         },
     };
 
-let cmd_build! m o = {
+let cmd_build! m o = if graphics.is_app m {
+    let dir = built_app! m o "built" false;
+    console.print! ("  " + dir)
+    console.print! "  mind run serves it; mind run --desktop opens it in a window"
+} else {
     report_build! m o "compiled" false
     console.print! ("  " + to_string (build.output_of m o))
+};
+
+/// A graphics application built (graphics.dr), and said so, as `report_build!`
+/// says a program is.
+let built_app! m o label quiet = match graphics.build! m o {
+    Result.error(why) => fail! why,
+    Result.ok(dir) => {
+        let line = label + " " + to_string (manifest.name m) + " v" + to_string (manifest.version m);
+        if quiet { console.error! line } else { console.print! line }
+        dir
+    },
+};
+
+/// `mind run` for a graphics application: built, then served on this machine
+/// -- the page, its scripts and the browser VM, with every path that names no
+/// file answered by the page, so a route reloads -- or opened in a window by
+/// the VM, backend and all, which the terminal is handed to.
+let cmd_run_app! m o c = {
+    let dir = built_app! m o "built" true;
+    if cli.flag_set c "desktop" {
+        match try! { os.replace! (build.vm_command! ()) ["--graphics", dir] } catch e { Result.error (to_string e) } {
+            Result.error(why) => fail! ("cannot open the window: " + why),
+            _ => fail! "the window did not open",
+        }
+    } else {
+        match cli.parse serve.opts ["--port", cli.get "8000" c "port", "--fallback", "index.html"] {
+            Result.error(why) => fail! why,
+            Result.ok(sc) => serve.serve! sc (path.join dir "assets") (manifest.name m),
+        }
+    }
 };
 
 /// Expand GitHub's shorthand before using the ordinary source parser.
@@ -1837,6 +1876,7 @@ let options_of! c =
                [:profile,  profile_of! c],
                [:targets,  cli.all c "target"],
                [:vm,       if cli.flag_set c "precompile" { ["--precompile"] } else { [] }],
+               [:runtime,  cli.get () c "runtime"],
                [:verbose,  cli.flag_set c "verbose"],
                [:jobs,     jobs_of! c],
                [:allow_downgrade, cli.flag_set c "allow-downgrade"]];
@@ -1871,7 +1911,10 @@ let run_command! c theirs = {
                   "run"   => match cli.rest c {
                                  [file, ..args] if names_source! file =>
                                      cmd_run_file! o file (list.append args theirs),
-                                 rest => cmd_run! (project! ()) o (list.append rest theirs),
+                                 rest => {
+                                     let m = project! ();
+                                     if graphics.is_app m { cmd_run_app! m o c } else { cmd_run! m o (list.append rest theirs) }
+                                 },
                              },
                   "test"  => cmd_test! (project! ()) o (cli.rest c),
                   "deps"  => cmd_deps! (project! ()) o,

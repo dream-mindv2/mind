@@ -147,8 +147,10 @@ this is a fragment, never compiled
     invoke('pack', '-C', str(project), 'init')
     assert '[ship]' in (project / 'mind.toml').read_text()
     invoke('pack', 'files', 'unexpected', ok=False)
-    # Every example in the standard library does what its fence says.
+    # Every example in the standard library does what its fence says. What is
+    # asked is that, and not speed: run several at a time on a loaded machine,
+    # the default five seconds failed a different example on each run.
     out = invoke('--compiler', COMPILER, 'docs', '-C', str(ROOT / 'mind/std'), '-o', str(project / 'std-docs'),
-                 '--strict-examples')
+                 '--example-timeout', '60000', '--strict-examples')
     assert 'did not do what' not in out, out
     print('Documentation: comments, examples, failures, timeouts, Markdown, offline assets and std examples passed')
