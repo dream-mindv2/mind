@@ -1026,7 +1026,7 @@ let with_checkout! m doing k = {
                 _ => (),
             }
             let scratch = path.join (util.mind_home! ()) ("checkout-" + file.scratch_suffix! ());
-            match fetch.run! "git clone" "git" ["clone", "--quiet", root, scratch] {
+            match fetch.run! "git clone" "git" ["clone", "--quiet", "--", root, scratch] {
                 Result.error(why) => { file.remove_all! scratch; fail! why },
                 _ => (),
             }
@@ -1104,7 +1104,7 @@ let index_text! place = {
         let scratch = path.join (util.mind_home! ()) ("index-" + file.scratch_suffix! ());
         file.mkdir_all! (util.mind_home! ())
         match fetch.run! "curl" "curl" (list.concat [["--fail", "--silent", "--show-error", "--location"], headers,
-                                                     ["--output", scratch, url]]) {
+                                                     ["--output", scratch, "--", url]]) {
             Result.error(why) => { file.remove_all! scratch; fail! (place + ": " + why) },
             _ => (),
         }

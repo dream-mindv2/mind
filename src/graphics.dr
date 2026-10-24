@@ -229,11 +229,19 @@ priv let assemble! m o app runtime web staging = {
     Result.ok staging
 };
 
-/// A file, or a directory and everything in it, copied to `to`.
+/// A file, or a directory and everything in it, copied to `to`. A symbolic
+/// link in a directory is refused, not followed: the site is published, and a
+/// link to `~/.ssh` in `images/` would publish what it leads to. (The desktop
+/// host serves none either.)
 priv let ship! from to = if file.is_dir! from {
     list.each! (fn rel -> {
+        let source = path.join from rel;
+        match io.lstat! source {
+            [_, _, :link] => raise! ("[graphics]: " + source + " is a symbolic link; ship what it leads to instead"),
+            _ => (),
+        }
         file.mkdir_all! (path.dirname (path.join to rel))
-        file.copy! (path.join from rel) (path.join to rel)
+        file.copy! source (path.join to rel)
     }) (file.walk! from)
 } else { file.copy! from to };
 
@@ -267,6 +275,10 @@ when test {
             file.write! main ""
             file.write! (path.join real "index.html") ""
             let ok = App.new () |> App.set_frontend main;
+            let site = path.join real "site";
+            file.mkdir_all! (path.join real "images")
+            io.symlink! main (path.join real "images/leak")
+            let refused = try! { ship! (path.join real "images") site; "" } catch e { to_string e };
             let got = [why! ok,
                        why! (App.set_frontend (path.join real "none.dr") ok),
                        why! (App.set_assets [path.join real "index.html"] ok),
@@ -274,8 +286,8 @@ when test {
                        why! (App.set_base "app/" ok)];
             strict! got
             file.remove_all! real
-            test.eq! [true, true, true, true, true]
-                [list.head got == "", str.contains_str "no such file" (list.nth 1 got),
+            test.eq! [true, true, true, true, true, true]
+                [str.contains_str "symbolic link" refused, list.head got == "", str.contains_str "no such file" (list.nth 1 got),
                  str.contains_str "page's own file" (list.nth 2 got), str.contains_str "origins" (list.nth 3 got),
                  str.contains_str "base is" (list.nth 4 got)]
         } ),

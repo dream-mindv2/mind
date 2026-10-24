@@ -56,6 +56,16 @@ let dep_dir! d = {
     path.join (path.join (cache_root! ()) "cache") (slug (to_string source) + at)
 };
 
+/// `value` as one argument to a program, or why it cannot be: a manifest's
+/// URL or revision beginning with `-` would be read as an option, and
+/// `--upload-pack=CMD` to git, or `-K FILE` to curl, runs or writes what the
+/// manifest says. Each such argument also follows a `--` where the program
+/// takes one; this says why the fetch failed.
+let argument : :string -> :string -> Result :string :string;
+let argument what value =
+    if str.starts_with "-" value { Result.error (what + " may not begin with `-`: " + value) }
+    else { Result.ok value };
+
 /// Run a command, and answer `[:ok, out]` or `[:error, message]`.
 let run! what program args = {
     let r = os.exec_for! program args 600000;
@@ -82,32 +92,35 @@ let git_fetch! d dir = {
 /// requested at the command line may ask for the default branch's current
 /// HEAD. Dependencies still go through `git_fetch!` and require a pin.
 let git_clone! d dir = {
-    let url = to_string (manifest.spec_get d "git");
+    let? url = argument "a git URL" (to_string (manifest.spec_get d "git"));
     let rev = manifest.dep_rev d;
     // `--depth 1` against a tag or branch; a bare revision needs history to
     // find it, so that case clones fully and then checks out.
     let cloned = match rev {
-        [:tag, t] => run! "git clone" "git" ["clone", "--quiet", "--depth", "1", "--branch", to_string t, url, dir],
-        [:branch, b] => run! "git clone" "git" ["clone", "--quiet", "--depth", "1", "--branch", to_string b, url, dir],
+        [:tag, t] => run! "git clone" "git" ["clone", "--quiet", "--depth", "1", "--branch", to_string t, "--", url, dir],
+        [:branch, b] => run! "git clone" "git" ["clone", "--quiet", "--depth", "1", "--branch", to_string b, "--", url, dir],
         // A bare revision needs history to find, so this one clones fully and
         // checks out below.
-        [:rev, _] => run! "git clone" "git" ["clone", "--quiet", url, dir],
+        [:rev, _] => run! "git clone" "git" ["clone", "--quiet", "--", url, dir],
         // Only explicit source installs can take this branch.
         _ => run! "git clone" "git" ["clone", "--quiet", "--depth", "1", "--", url, dir],
     };
     match cloned {
         Result.error(why) => Result.error why,
         _ => match rev {
-            [:rev, r] => run! "git checkout" "git" ["-C", dir, "checkout", "--quiet", to_string r],
+            [:rev, r] => match argument "a revision" (to_string r) {
+                Result.ok(rev) => run! "git checkout" "git" ["-C", dir, "checkout", "--quiet", "--detach", rev],
+                failed => failed,
+            },
             _ => ok "",
         },
     }
 };
 
 let url_fetch! d dir = {
-    let url = to_string (manifest.spec_get d "url");
+    let? url = argument "a URL" (to_string (manifest.spec_get d "url"));
     let archive = dir + ".tar.gz";
-    match run! "curl" "curl" ["--fail", "--silent", "--show-error", "--location", "--output", archive, url] {
+    match run! "curl" "curl" ["--fail", "--silent", "--show-error", "--location", "--output", archive, "--", url] {
         Result.error(why) => Result.error why,
         _ => {
             file.mkdir_all! dir
@@ -212,7 +225,10 @@ let unpack! mirror hex dir = {
     let at = archive_at mirror hex;
     let local = match is_url mirror { true => dir + ".tar.gz", false => at };
     let got = match is_url mirror {
-        true => run! "curl" "curl" ["--fail", "--silent", "--show-error", "--location", "--output", local, at],
+        true => match argument "a mirror" at {
+            Result.ok(url) => run! "curl" "curl" ["--fail", "--silent", "--show-error", "--location", "--output", local, "--", url],
+            failed => failed,
+        },
         false => if io.exists! at { ok "" } else { Result.error "not there" },
     };
     match got {
@@ -406,6 +422,9 @@ when test {
     import std.test;
 
     let tests = [
+        test.case "a URL or revision is never read as an option" $( test.eq!
+            [Result.ok "https://x/y.git", Result.error "a git URL may not begin with `-`: --upload-pack=touch /tmp/x"]
+            [argument "a git URL" "https://x/y.git", argument "a git URL" "--upload-pack=touch /tmp/x"] ),
         // A readable directory beats an unreadable hash: when a fetch goes
         // wrong the first thing anyone does is go and look at it.
         test.case "slug keeps what is safe"
