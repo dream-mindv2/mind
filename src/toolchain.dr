@@ -390,7 +390,7 @@ let loader_script loader =
     "#!/bin/sh\n"
     + "# This system has no FHS dynamic loader (NixOS, Guix), so the VM is run by\n"
     + "# the one its own programs use. Written by `mind toolchain install`.\n"
-    + "here=$(cd \"$(dirname \"$0\")/..\" && pwd)\n"
+    + "here=$(cd \"$(dirname \"$(readlink -f \"$0\")\")/..\" && pwd)\n"
     + "export MINDV2_PATH=\"${MINDV2_PATH:-$here/lib/dream}\"\n"
     + "exec " + loader + " \"$here/bin/dream.bin\" \"$@\"\n";
 

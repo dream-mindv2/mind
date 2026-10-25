@@ -40,8 +40,9 @@ mind run                        # Hello from hello
 curl -fsSL https://dream-mindv2.github.io/toolchain/install.sh | sh
 ```
 
-which installs the latest release of the whole language, signed and checked,
-into `~/.mindv2/toolchains/VERSION`, and puts it on `PATH`. After that `mind`
+which installs the latest release of the whole language, checked, into
+`~/.mindv2/toolchains/VERSION`, and links `dream` and `mind` into
+`~/.local/bin` -- adding that to `PATH` only where it is not already. After that `mind`
 manages them (see "Toolchains" below). Or build and install from the
 [workspace](https://github.com/Custards1/dream):
 

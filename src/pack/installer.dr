@@ -72,10 +72,21 @@ let script sp assets = {
 // With `[ship.installer] layout = "toolchain"`, the script installs what
 // `mind toolchain` manages (mind/tool/src/toolchain.dr) rather than into a
 // prefix: the tarball unpacked whole into `$MINDV2_HOME/toolchains/VERSION`
-// (`~/.mindv2` by default), `current` linked to it, and `current/bin` put on
-// `PATH` by an `env` file the shell's startup files source -- unless
-// `MIND_NO_MODIFY_PATH=1`, when it only says what to add. From then on
-// `mind toolchain` installs, switches and updates.
+// (`~/.mindv2` by default) and `current` linked to it. From then on `mind
+// toolchain` installs, switches and updates, by moving that one link.
+//
+// **On `PATH` the standard way**: `dream` and `mind` are links in
+// `~/.local/bin` (`$XDG_BIN_HOME`), the directory for a user's own programs,
+// which most distributions already put on `PATH` -- Debian's and Ubuntu's
+// `~/.profile` when it exists, Fedora's `~/.bashrc`, systemd's user
+// environment -- so nothing of the shell's is edited at all. A link works
+// because the VM finds its standard library from the binary it really is
+// (`/proc/self/exe`, through the link). On Termux they go in `$PREFIX/bin`,
+// which is the user's and always on `PATH`. Only where the directory is not
+// on `PATH` -- macOS, NixOS by default -- is it put there, rustup's way: an
+// `env` file the shell's startup files source, and fish's own `conf.d` for
+// fish; `MIND_NO_MODIFY_PATH=1` says what to add instead. A file already
+// there that is not one of these links is left alone, and said so.
 //
 // On a Linux whose programs do not use the usual loader -- NixOS without
 // nix-ld, Guix -- the VM is run through the one the system's own shell names,
@@ -116,17 +127,36 @@ let toolchain_script sp assets =
     + loader_wrap
     + "  mv \"$tmp/unpacked\" \"$dest\"\n"
     + "  echo \"installed toolchain $version in $dest\"\nfi\n\n"
-    + "ln -sfn \"toolchains/$version\" \"$home/current\"\n"
-    + "cat > \"$home/env\" <<EOF\n"
-    + "# Puts the Dream toolchain in use on PATH. Written by its install.sh.\n"
-    + "case \":\\\${PATH}:\" in\n  *\":$home/current/bin:\"*) ;;\n  *) export PATH=\"$home/current/bin:\\\$PATH\" ;;\nesac\nEOF\n\n"
-    + "line=\". \\\"$home/env\\\"\"\n"
-    + "if [ \"${MIND_NO_MODIFY_PATH:-}\" = 1 ]; then\n  echo \"to use it, add this to your shell's startup file: $line\"\nelse\n"
-    + "  for rc in \"$HOME/.profile\" \"$HOME/.bashrc\" \"$HOME/.zshrc\"; do\n"
-    + "    case $rc in *.profile) ;; *) [ -f \"$rc\" ] || continue ;; esac\n"
-    + "    grep -qsF \"$line\" \"$rc\" || printf '\\n%s\\n' \"$line\" >> \"$rc\"\n  done\n"
-    + "  echo \"added $home/current/bin to PATH in your shell's startup files; open a new shell, or run: $line\"\nfi\n"
+    + "ln -sfn \"toolchains/$version\" \"$home/current\"\n\n"
+    + path_setup
     + "echo \"toolchain $version is in use: try 'dream --version' and 'mind toolchain list'\"\n";
+
+/// `dream` and `mind` linked where programs are found; see "On `PATH` the
+/// standard way" above.
+priv let path_setup =
+    "if [ \"$os\" = android ] && [ -n \"${PREFIX:-}\" ]; then bin=$PREFIX/bin; else bin=${XDG_BIN_HOME:-$HOME/.local/bin}; fi\n"
+    + "mkdir -p \"$bin\"\n"
+    + "for prog in dream mind; do\n"
+    + "  if [ -e \"$bin/$prog\" ] && [ ! -L \"$bin/$prog\" ]; then\n"
+    + "    echo \"left $bin/$prog alone: it is not a link this installer made; remove it to use the toolchain's\"\n"
+    + "  else\n    ln -sfn \"$home/current/bin/$prog\" \"$bin/$prog\"\n  fi\ndone\n\n"
+    + "case \":${PATH}:\" in\n  *\":$bin:\"*)\n    echo \"dream and mind are in $bin, which is on your PATH\" ;;\n  *)\n"
+    + "    cat > \"$home/env\" <<EOF\n"
+    + "# Puts $bin, where the Dream toolchain's programs are, on PATH. Written by its install.sh.\n"
+    + "case \":\\\${PATH}:\" in\n  *\":$bin:\"*) ;;\n  *) export PATH=\"$bin:\\\$PATH\" ;;\nesac\nEOF\n"
+    + "    line=\". \\\"$home/env\\\"\"\n"
+    + "    if [ \"${MIND_NO_MODIFY_PATH:-}\" = 1 ]; then\n"
+    + "      echo \"$bin is not on your PATH; add it, or add this to your shell's startup file: $line\"\n    else\n"
+    + "      for rc in \"$HOME/.profile\" \"$HOME/.bashrc\" \"$HOME/.zshrc\"; do\n"
+    + "        case $rc in\n          *.profile) ;;\n"
+    + "          *.bashrc) [ -f \"$rc\" ] || case ${SHELL:-} in */bash) ;; *) continue ;; esac ;;\n"
+    + "          *.zshrc) [ -f \"$rc\" ] || case ${SHELL:-} in */zsh) ;; *) continue ;; esac ;;\n        esac\n"
+    + "        grep -qsF \"$line\" \"$rc\" || printf '\\n%s\\n' \"$line\" >> \"$rc\"\n      done\n"
+    + "      if [ -d \"$HOME/.config/fish\" ] || case ${SHELL:-} in */fish) true ;; *) false ;; esac; then\n"
+    + "        mkdir -p \"$HOME/.config/fish/conf.d\"\n"
+    + "        printf 'fish_add_path -g %s\\n' \"$bin\" > \"$HOME/.config/fish/conf.d/dream.fish\"\n      fi\n"
+    + "      echo \"added $bin to PATH in your shell's startup files; open a new shell, or run: $line\"\n"
+    + "    fi ;;\nesac\n";
 
 /// The loader wrap, for a Linux without the usual loader.
 priv let loader_wrap =
@@ -143,7 +173,7 @@ priv let loader_wrap =
     + "      cat > \"$tmp/unpacked/bin/dream\" <<EOF\n"
     + "#!/bin/sh\n# This system has no FHS dynamic loader (NixOS, Guix), so the VM is run by\n"
     + "# the one its own programs use. Written by install.sh.\n"
-    + "here=\\$(cd \"\\$(dirname \"\\$0\")/..\" && pwd)\n"
+    + "here=\\$(cd \"\\$(dirname \"\\$(readlink -f \"\\$0\")\")/..\" && pwd)\n"
     + "export MINDV2_PATH=\"\\${MINDV2_PATH:-\\$here/lib/dream}\"\n"
     + "exec $loader \"\\$here/bin/dream.bin\" \"\\$@\"\nEOF\n"
     + "      chmod 755 \"$tmp/unpacked/bin/dream\"\n"
