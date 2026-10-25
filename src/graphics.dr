@@ -13,10 +13,16 @@
 //     connect = ["https://api.example.com"]  # origins the page may fetch from
 //     base = "/"                     # where the page is served, when routes are paths
 //
-// What it makes is a directory, `target/<profile>/<name>/`: `assets/` is a
-// static site -- the page, its scripts, the browser VM and `frontend.dream` --
-// and `backend.dream` beside it when there is one. `dream --graphics DIR` runs
-// the two together.
+// What it makes is one image, `target/<profile>/<name>.dream`, the way every
+// other package's build is: the backend's program -- or, with no backend, the
+// frontend's -- carrying the page as payloads, one per file, each named
+// `graphics/` and its path (`graphics/index.html`, `graphics/frontend.dream`).
+// The VM sees `graphics/index.html` in an image it is asked to run and opens
+// the window, serving the page from the payloads and running the image's own
+// program, `--headless`, as the backend. So `mind install` installs it as it
+// installs anything, and `dream -x NAME` opens it. Beside the image is the
+// same page as a static site, `target/<profile>/<name>/assets/`, which is
+// what a web server -- `mind run` without `--desktop` -- serves.
 //
 // The page's content security policy allows scripts, styles, images, fonts and
 // media from the application itself, and fetches from its own origin and each
@@ -113,12 +119,12 @@ let problem! app = {
     }
 };
 
-/// Where the application is made: `--output` as written, or
-/// `target/<profile>/<name>/`.
+/// Where the page is made as a site: `target/<profile>/<name>/`, or beside
+/// an `--output` image, named for it.
 let dir_of : :map -> :map -> :string;
 let dir_of m o = match build.option o :output () {
     () => path.join_all (build.work_dir m o) [build.profile_of o, manifest.name m],
-    p => p,
+    p => if str.ends_with ".dream" p { str.trim_suffix ".dream" p } else { p + ".site" },
 };
 
 /// The directory holding `dream-browser.mjs` and `.wasm`, or why there is none.
@@ -175,9 +181,10 @@ let page template app = {
         |> str.replace "{{base}}" base
 };
 
-/// Build the application, answering where it is. It is made beside where it
-/// goes and renamed into place, so a failed build leaves the last one as it
-/// was, and nothing is ever half an application.
+/// Build the application, answering where its image is. The site is made
+/// beside where it goes and renamed into place, and the image is written by
+/// the compiler, which leaves the last one as it was on a failure, so nothing
+/// is ever half an application.
 let build! : :map -> :map -> Result :string :string;
 let build! m o = {
     let app = app! m;
@@ -192,7 +199,7 @@ let build! m o = {
     let staging = file.temp_dir_in! parent ("." + path.basename out + "-");
     let made = try! { assemble! m o app runtime web staging } catch e { Result.error (to_string e) };
     strict! made
-    match made {
+    let? _ = match made {
         Result.ok(_) => {
             file.remove_all! out
             io.rename! staging out
@@ -202,7 +209,16 @@ let build! m o = {
             file.remove_all! staging
             Result.error why
         },
-    }
+    };
+    let assets = path.join out "assets";
+    let carried = list.concat (list.map (fn rel -> ["--payload", "graphics/" + rel + "=" + path.join assets rel])
+                                        (file.walk! assets));
+    let program = match App.backend app {
+        () => o |> build.with_option :entry (App.frontend app) |> build.with_option :targets ["any"],
+        b => o |> build.with_option :entry b,
+    };
+    let? _ = build.compile! m (program |> build.with_option :extra (list.append (build.option o :extra []) carried));
+    Result.ok (build.output_of m o)
 };
 
 priv let assemble! m o app runtime web staging = {
@@ -212,18 +228,17 @@ priv let assemble! m o app runtime web staging = {
     let? _ = build.compile! m (o |> build.with_option :entry (App.frontend app)
                                  |> build.with_option :output (path.join assets "frontend.dream")
                                  |> build.with_option :targets ["any"]);
-    let? _ = match App.backend app {
-        () => Result.ok "",
-        b => build.compile! m (o |> build.with_option :entry b |> build.with_option :output (path.join staging "backend.dream")),
-    };
     list.each! (fn n -> file.copy! (path.join web n) (path.join assets n)) ["main.mjs", "dom.mjs", "worker.mjs"]
     list.each! (fn n -> file.copy! (path.join runtime n) (path.join assets n)) ["dream-browser.mjs", "dream-browser.wasm"]
     list.each! (fn f -> file.copy! f (path.join assets (path.basename f))) (list.append (App.js app) (App.css app))
     list.each! (fn a -> ship! a (path.join assets (path.basename a))) (App.assets app)
     let template = match file.read! (path.join web "index.html") { () => "", t => t };
     file.write! (path.join assets "index.html") (page template app)
+    // Whether the image's program is a backend to start, or the frontend
+    // itself, which only the page runs.
     file.write! (path.join assets "app.json") (json.encode %{
-        "js" => list.map path.basename (App.js app), "css" => list.map path.basename (App.css app)
+        "js" => list.map path.basename (App.js app), "css" => list.map path.basename (App.css app),
+        "backend" => App.backend app != ()
     } + "\n")
     file.write! (path.join assets "csp.txt") (csp app + "\n")
     Result.ok staging

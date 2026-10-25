@@ -696,8 +696,11 @@ base = "/"                            # where it is served, when routes are path
 
 `mind run` builds it and serves `assets/` on 127.0.0.1 (`--port`, default
 8000), answering a path that names no file with the page, so a route reloads;
-`mind run --desktop` opens it in a window instead, backend and all, through
-`dream --graphics`, which needs a VM built with the desktop host. The page's
+`mind run --desktop` opens it in a window instead, backend and all. What opens
+is the build's one image, `target/<profile>/<name>.dream`: the backend's program
+with the page carried as `graphics/` payloads, which a VM built with the desktop
+host runs in a window, so `mind install` installs an application as it does any
+program and `dream -x NAME` opens it. The page's
 own files come with the standard library; the browser VM is `--runtime DIR`,
 then `[graphics] runtime`, then `$DREAM_BROWSER`, then the installation's
 `browser/`, then a `build-browser/` at or above the working directory.

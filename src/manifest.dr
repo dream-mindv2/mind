@@ -191,11 +191,12 @@ let payloads m =
                         (map.pairs (toml.section (doc m) "payload")));
 
 /// What is wrong with this manifest's `[payload]`, or `()`. A name is how the
-/// compiler is told it -- `NAME=FILE` -- so it cannot hold a `/` or an `=`.
+/// compiler is told it -- `NAME=FILE` -- so it cannot hold an `=`; it may
+/// hold a `/`. `graphics/` is the page of an application (`graphics.dr`).
 let payload_problem m =
     list.first_or () (flat_map (fn [n, p] ->
-        if n == "" || str.contains_str "/" n || str.contains_str "=" n {
-            [root m + "/mind.toml: [payload] name `" + n + "` cannot be empty or hold `/` or `=`"]
+        if n == "" || str.contains_str "=" n || str.starts_with "graphics/" n {
+            [root m + "/mind.toml: [payload] name `" + n + "` cannot be empty, hold `=` or begin `graphics/`"]
         } else if type_of p != :string {
             [root m + "/mind.toml: [payload] `" + n + "` should be a path, as a string"]
         } else { [] }) (map.pairs (toml.section (doc m) "payload")));

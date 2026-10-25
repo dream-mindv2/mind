@@ -147,9 +147,13 @@ printf 'hello' >"$tmp/pl/app/hello.txt"
 pkg pl/note '[payload]\nnote = "data/note.txt"\n' 'import std.payload;\nlet note u = match payload.text "note" { () => "missing", t => t };\n'
 mkdir -p "$tmp/pl/note/data" && printf 'from a dependency' >"$tmp/pl/note/data/note.txt"
 check "a [payload] file is carried and found by name, a dependency's too" pl 0 "hello / from a dependency" run
-pkg plbad/app '[payload]\n"a/b" = "x.txt"\n' 'let main! = ();\n'
+pkg plpath/app '[payload]\n"docs/a.txt" = "x.txt"\n' 'import std.console;\nimport std.payload;\nlet main! = console.print! (match payload.text "docs/a.txt" { () => "missing", t => t });\n'
+mv "$tmp/plpath/app/lib.dr" "$tmp/plpath/app/main.dr"
+printf 'by its path' >"$tmp/plpath/app/x.txt"
+check "a payload may be named by a path" plpath 0 "by its path" run
+pkg plbad/app '[payload]\n"graphics/a" = "x.txt"\n' 'let main! = ();\n'
 mv "$tmp/plbad/app/lib.dr" "$tmp/plbad/app/main.dr"
-check "a payload name with a slash is refused" plbad 1 "[payload] name \`a/b\` cannot be empty or hold" build
+check "graphics/ is an application's page, and refused as a name" plbad 1 "[payload] name \`graphics/a\` cannot be empty, hold" build
 pkg plclash/app '[dependencies]\nother = "../other"\n[payload]\nnote = "mine.txt"\n' 'import other.lib;\nlet main! = ();\n'
 mv "$tmp/plclash/app/lib.dr" "$tmp/plclash/app/main.dr"
 pkg plclash/other '[payload]\nnote = "theirs.txt"\n'

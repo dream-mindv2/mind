@@ -397,9 +397,9 @@ let relay! r =
     };
 
 let cmd_build! m o = if graphics.is_app m {
-    let dir = built_app! m o "built" false;
-    console.print! ("  " + dir)
-    console.print! "  mind run serves it; mind run --desktop opens it in a window"
+    let image = built_app! m o "built" false;
+    console.print! ("  " + image)
+    console.print! "  dream runs it in a window; mind run serves it to a browser, mind run --desktop opens it"
 } else {
     report_build! m o "compiled" false
     console.print! ("  " + to_string (build.output_of m o))
@@ -409,21 +409,22 @@ let cmd_build! m o = if graphics.is_app m {
 /// says a program is.
 let built_app! m o label quiet = match graphics.build! m o {
     Result.error(why) => fail! why,
-    Result.ok(dir) => {
+    Result.ok(image) => {
         let line = label + " " + to_string (manifest.name m) + " v" + to_string (manifest.version m);
         if quiet { console.error! line } else { console.print! line }
-        dir
+        image
     },
 };
 
 /// `mind run` for a graphics application: built, then served on this machine
 /// -- the page, its scripts and the browser VM, with every path that names no
-/// file answered by the page, so a route reloads -- or opened in a window by
-/// the VM, backend and all, which the terminal is handed to.
+/// file answered by the page, so a route reloads -- or its image run by the
+/// VM, which opens the window, backend and all, and is handed the terminal.
 let cmd_run_app! m o c = {
-    let dir = built_app! m o "built" true;
+    let image = built_app! m o "built" true;
+    let dir = graphics.dir_of m o;
     if cli.flag_set c "desktop" {
-        match try! { os.replace! (build.vm_command! ()) ["--graphics", dir] } catch e { Result.error (to_string e) } {
+        match try! { os.replace! (build.vm_command! ()) [image] } catch e { Result.error (to_string e) } {
             Result.error(why) => fail! ("cannot open the window: " + why),
             _ => fail! "the window did not open",
         }
@@ -469,7 +470,7 @@ let install_package! m o given = {
                 if path.same_file! output dest { Result.error "the build output must differ from the installed image" }
                 else if file.is_dir! dest { Result.error ("the installation destination is a directory: " + dest) }
                 else {
-                    let? _ = build.compile! m o;
+                    let? _ = if graphics.is_app m { graphics.build! m o } else { build.compile! m o };
                     file.mkdir_all! dir
                     let scratch = file.temp_file_in! dir ".mind-install-";
                     let result = try! {
