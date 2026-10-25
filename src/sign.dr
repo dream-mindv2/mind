@@ -103,7 +103,7 @@ mapping Built {
     source : :string
     compiler : :string
     std : :string
-    // The VM the compiler ran on, `0.1.0+COMMIT` as `dream --version` names it.
+    // The VM the compiler ran on, `VERSION+COMMIT` as `dream --version` names it.
     // Not a hash: the same VM built twice is two binaries, and what matters
     // is which source it was built from.
     vm : :string

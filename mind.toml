@@ -3,6 +3,6 @@
 [package]
 license = "MIT OR Apache-2.0"
 name = "mind"
-version = "0.3.2"
+version = "0.3.3"
 repository = "https://github.com/dream-mindv2/mind"
 description = "The Dream build tool"
