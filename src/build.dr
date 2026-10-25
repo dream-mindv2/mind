@@ -969,10 +969,11 @@ let compiler_digest! m o =
     };
 
 /// The VM this build's compiler runs on, as `dream --version` names it, made
-/// one word: `0.1.0+COMMIT`. `unknown` for a VM too old to say.
+/// one word: `0.1.0+COMMIT`. `unknown` for a VM too old to say. Only the
+/// first line is the name; the lines after it list what the VM was built with.
 let vm_identity! () = {
     let r = os.exec_for! (vm_command! ()) ["--version"] 60000;
-    match str.words (r.[:out else ""]) {
+    match str.words (list.first_or "" (str.lines (r.[:out else ""]))) {
         ["dream", v, commit] => v + "+" + str.trim_suffix ")" (str.trim_prefix "(" commit),
         _ => "unknown",
     }
