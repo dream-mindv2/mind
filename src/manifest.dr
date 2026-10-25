@@ -200,6 +200,24 @@ let payload_problem m =
             [root m + "/mind.toml: [payload] `" + n + "` should be a path, as a string"]
         } else { [] }) (map.pairs (toml.section (doc m) "payload")));
 
+/// Whether a build in `profile` carries the licences of its packages: on
+/// unless `licenses = false` in the profile's section, or in `[build]` for
+/// every profile (build.dr, "licences").
+let embeds_licenses : :map -> :string -> :bool;
+let embeds_licenses m profile = match toml.get () (doc m) ("profile." + profile) "licenses" {
+    () => toml.get () (doc m) "build" "licenses" != false,
+    v => v != false,
+};
+
+/// Whether a build in `profile` checks its dependencies' licences against
+/// the package's (build.dr, `license_check`): on unless `license-check =
+/// false` in the profile's section, or in `[build]` for every profile.
+let checks_licenses : :map -> :string -> :bool;
+let checks_licenses m profile = match toml.get () (doc m) ("profile." + profile) "license-check" {
+    () => toml.get () (doc m) "build" "license-check" != false,
+    v => v != false,
+};
+
 /// Arguments passed to the compiler as written, for whatever this does not
 /// name yet. An escape hatch, and deliberately last on the command line.
 let compiler_flags m = build_list m "flags";

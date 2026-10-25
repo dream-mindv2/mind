@@ -39,17 +39,17 @@ mnd() {
 
 git_c() { git -c user.email=t@t -c user.name=t "$@"; }
 
-mkdir -p "$tmp/keys" && printf '[package]\nname = "k"\nversion = "0.1.0"\n' >"$tmp/keys/mind.toml"
+mkdir -p "$tmp/keys" && printf '[package]\nname = "k"\nversion = "0.1.0"\nlicense = "MIT"\n' >"$tmp/keys/mind.toml"
 mnd keys keygen --signing-key "$tmp/author.key"
 public=$(echo "$out" | tail -1 | tr -d ' ')
 
 # A program with a dependency of its own, so the paths of two packages and
 # the standard library all have to be made relative.
 mkdir -p "$tmp/greet/src" && (cd "$tmp/greet" && git init -q -b main \
-    && printf '[package]\nname = "greet"\nversion = "1.0.0"\n' >mind.toml \
+    && printf '[package]\nname = "greet"\nversion = "1.0.0"\nlicense = "MIT"\n' >mind.toml \
     && echo 'let hello name = "hello, " + name;' >src/words.dr && git add . && git_c commit -qm one && git tag v1)
 mkdir -p "$tmp/app/src" && (cd "$tmp/app" && git init -q -b main \
-    && printf '[package]\nname = "app"\nversion = "1.2.0"\n\n[dependencies]\ngreet = { git = "file://%s/greet", tag = "v1" }\n' "$tmp" >mind.toml \
+    && printf '[package]\nname = "app"\nversion = "1.2.0"\nlicense = "MIT"\n\n[dependencies]\ngreet = { git = "file://%s/greet", tag = "v1" }\n' "$tmp" >mind.toml \
     && printf 'import std.console;\nimport greet.words;\nlet main! = console.print! (words.hello "reproducer");\n' >src/main.dr \
     && git add . && git_c commit -qm one)
 (cd "$tmp/app" && "$dream" "$mind" deps >/dev/null 2>&1 && git add mind.lock && git_c commit -qm lock)
@@ -91,7 +91,7 @@ check "an attestation of other source is skipped, and nothing passes" 1 "attests
 # A dependency: the user, who trusts the author's key, rebuilds what they
 # fetched against the author's attestation. One by a key they do not trust
 # would be listed and ignored.
-mkdir -p "$tmp/user/src" && printf '[package]\nname = "user"\nversion = "0.1.0"\n\n[dependencies]\napp = { git = "file://%s/app", tag = "v1.2.0", keys = ["%s"] }\n' "$tmp" "$public" >"$tmp/user/mind.toml"
+mkdir -p "$tmp/user/src" && printf '[package]\nname = "user"\nversion = "0.1.0"\nlicense = "MIT"\n\n[dependencies]\napp = { git = "file://%s/app", tag = "v1.2.0", keys = ["%s"] }\n' "$tmp" "$public" >"$tmp/user/mind.toml"
 echo 'let main! = ();' >"$tmp/user/src/main.dr"
 mnd user reproduce app --release
 check "a dependency is reproduced from what was fetched" 0 "reproduced v1.2.0 (release)"

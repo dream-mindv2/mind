@@ -33,18 +33,19 @@ image() {
     if [ "$got" != "$2" ]; then printf 'FAIL dream -x %s: expected %s, got %s\n' "$1" "$2" "$got"; exit 1; fi
 }
 
-printf '[package]\nname = "current"\n' >"$tmp/work/current/mind.toml"
+printf '[package]\nname = "current"\nlicense = "MIT"\n' >"$tmp/work/current/mind.toml"
 printf 'import std.console;\nlet main! = console.print! "current";\n' >"$tmp/work/current/main.dr"
 run "$tmp/work/current" install
 check 0 'bare install builds and installs the current package'
 test -f "$tmp/work/current/target/debug/current.dream"
 image current current
 
-printf '[package]\nname = "helper"\n' >"$tmp/work/helper/mind.toml"
+printf '[package]\nname = "helper"\nlicense = "MIT"\n' >"$tmp/work/helper/mind.toml"
 printf 'let word = "helper";\n' >"$tmp/work/helper/lib.dr"
 cat >"$tmp/work/addon/mind.toml" <<'EOF'
 [package]
 name = "addon"
+license = "MIT"
 [build]
 output = "must-not-be-created.dream"
 [dependencies]
@@ -81,7 +82,7 @@ image addon-tool 'helper generated release'
 
 repo="$tmp/repos/app.git"
 git init -q -b main "$repo"
-printf '[package]\nname = "remote"\n' >"$repo/mind.toml"
+printf '[package]\nname = "remote"\nlicense = "MIT"\n' >"$repo/mind.toml"
 printf 'import std.console;\nlet main! = console.print! "first";\n' >"$repo/main.dr"
 git -C "$repo" add .
 git -C "$repo" -c user.email=test@example.com -c user.name=test commit -qm first

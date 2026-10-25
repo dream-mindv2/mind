@@ -34,7 +34,15 @@ mind run                        # Hello from hello
 
 ## Installing
 
-`mind` comes with Dream. Build and install the toolchain from the
+`mind` comes with Dream. The quickest way is a released toolchain:
+
+```sh
+curl -fsSL https://dream-mindv2.github.io/toolchain/install.sh | sh
+```
+
+which installs the latest release of the whole language, signed and checked,
+into `~/.mindv2/toolchains/VERSION`, and puts it on `PATH`. After that `mind`
+manages them (see "Toolchains" below). Or build and install from the
 [workspace](https://github.com/Custards1/dream):
 
 ```sh
@@ -46,6 +54,40 @@ just install                    # dream, mind, the compiler and std, in ~/.mindv
 
 `mind` needs the VM (`dream`), the compiler (`dreams.dream`) and the standard
 library, and finds all three in the installation by itself.
+
+## Toolchains
+
+A toolchain is one release of the whole language -- VM, compiler, `mind`,
+language server and standard library -- from
+[dream-mindv2/toolchain](https://github.com/dream-mindv2/toolchain). Several
+can be installed side by side, one in use:
+
+```sh
+mind toolchain list                # installed, and which is in use
+mind toolchain list --available    # every release
+mind toolchain install [VERSION]   # the latest, or VERSION, beside the others
+mind toolchain use VERSION         # switch (back down, too), installing it if need be
+mind toolchain update              # the latest, and use it
+mind toolchain remove VERSION
+mind toolchain which
+```
+
+Each lives in `~/.mindv2/toolchains/VERSION` (`$MINDV2_HOME`), and
+`~/.mindv2/current` links to the one in use, whose `bin` is on `PATH`. A
+project pins the toolchain it builds with in `mind.toml`:
+
+```toml
+[toolchain]
+version = "0.3.0"
+```
+
+and `mind` run there hands the command to that toolchain, installing it first
+if it is not here. A `mind` built from source has no toolchain of its own and
+leaves pins alone. Every toolchain is checked against its release's
+`SHA256SUMS` and a signature of them by a key `mind` was built trusting before
+anything is unpacked; on a Linux without the usual dynamic loader (NixOS
+without nix-ld, Guix) its VM is run through the system's own loader.
+[src/toolchain.dr](src/toolchain.dr) is the design.
 
 ## A project
 
@@ -94,6 +136,33 @@ code reads them; two packages naming two different files the same is an error,
 as is a name with `/` or `=` in it. It is the compiler's `--payload NAME=FILE`
 written down once, and a build script's `build.payload` is the same for a file
 that has to be made first.
+
+**A release build carries the licences** of its package and of every
+dependency: each licence file at a package's root (`LICENSE`, `LICENSE-MIT`,
+`COPYING`, `NOTICE`, ..) gathered into one payload, `licenses`, each under a
+line naming the package and the file, so a program's `--licenses` prints
+`payload.licenses ()`. A licence such as MIT's asks that its text go wherever
+the software does, and a program is one file. A debug build carries none, and
+`licenses = false` in `[profile.release]` (or in `[build]`, for every
+profile) leaves them out:
+
+```toml
+[profile.release]
+licenses = false
+```
+
+**A release build checks the licences** of its dependencies against its own
+`[package] license`, an SPDX expression (`MIT OR Apache-2.0`), and fails if
+one does not allow it: a GPL library in an MIT program, Apache-2.0 in a
+GPL-2.0-only one, a dependency that declares no licence (which may not be
+redistributed at all), or one the check does not know. A dependency's `A OR
+B` is taken as whichever fits; the package's own `A OR B` must be allowed in
+full. LGPL counts as GPL, since one Dream image cannot be relinked in part.
+It is a cautious reading, not legal advice, and the author decides:
+`--no-license-check`, or `license-check = false` in `[profile.release]` (or
+`[build]`), builds anyway, and `[licenses] accept = ["LicenseRef-Acme"]`
+takes a licence it does not know as permissive. src/licenses.dr has the
+rules.
 
 Every command but `new` and `init` looks for `mind.toml` here or above, so
 they work from anywhere inside a project, the way `git` finds its root.
@@ -662,6 +731,9 @@ on.
 | `MIND_INDEX_MAX_AGE` | how old an index's newest checkpoint may be, overriding its keepers (`14d`; `0` for no limit) |
 | `MIND_MIRRORS` | where to fetch a locked package whose source is down, before `[fetch] mirrors` |
 | `MIND_BUILD_CACHE` | where build steps are cached (default `$MIND_HOME/build`) |
+| `MINDV2_HOME` | where toolchains are installed (default `~/.mindv2`) |
+| `MIND_TOOLCHAIN_SITE` | where toolchain releases are announced, a URL or a directory (default `https://dream-mindv2.github.io/toolchain`) |
+| `MIND_TOOLCHAIN_KEYS` | keys trusted to sign toolchains besides the built-in one: a private mirror's |
 | `MIND_UNITS` | where the compiler keeps each module's work between builds (default `$MIND_HOME/units`; `off` for none). Entries unused for 30 days are removed |
 
 ## Layout

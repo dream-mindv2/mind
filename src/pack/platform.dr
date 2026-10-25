@@ -12,7 +12,7 @@ import std.os;
 import std.str;
 
 type Arch = :x86_64 | :aarch64 | :all;
-type Os = :linux | :macos | :windows;
+type Os = :linux | :macos | :windows | :android;
 
 /// The architecture this VM was built for, which is the one a native program
 /// it ships has to match.
@@ -28,6 +28,7 @@ let host_os () = match os.platform () {
     :linux => :linux,
     :macos => :macos,
     :windows => :windows,
+    :android => :android,
     _ => (),
 };
 
@@ -39,6 +40,7 @@ priv let arch_names : %{:string => Arch} = %{
 
 priv let os_names : %{:string => Os} = %{
     "linux" => :linux, "macos" => :macos, "darwin" => :macos, "osx" => :macos, "windows" => :windows,
+    "android" => :android,
 };
 
 /// A machine in any format's spelling, or `native` for this one.
@@ -61,7 +63,7 @@ let parse_os name = match str.lower name {
         o => ok o,
     },
     n => match os_names.[n else ()] {
-        () => Result.error ("unknown system `" + name + "`: say linux, macos or windows"),
+        () => Result.error ("unknown system `" + name + "`: say linux, macos, windows or android"),
         o => ok o,
     },
 };
@@ -80,7 +82,7 @@ let uname : Arch -> :string;
 let uname a = match a { :x86_64 => "x86_64", :aarch64 => "aarch64", :all => "any" };
 
 let os_name : Os -> :string;
-let os_name o = match o { :linux => "linux", :macos => "macos", :windows => "windows" };
+let os_name o = match o { :linux => "linux", :macos => "macos", :windows => "windows", :android => "android" };
 
 when test {
     import std.test;

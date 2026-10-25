@@ -45,7 +45,7 @@ mapping Spec {
     name : :string
     version : :string
     arch : :x86_64 | :aarch64 | :all
-    os : :linux | :macos | :windows
+    os : :linux | :macos | :windows | :android
     release : :integer = 1
     summary : :string = ""
     description : :string = ""

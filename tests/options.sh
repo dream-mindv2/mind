@@ -21,10 +21,10 @@ fail=0
 pass=0
 
 # pkg DIR TOML [MODULE] -- a package: its manifest's lines after [package],
-# and the text of its one module.
+# and the text of its one module. Licensed, as a release build checks.
 pkg() {
     mkdir -p "$tmp/$1"
-    printf '[package]\nname = "%s"\nversion = "1.0.0"\n%b' "$(basename "$1")" "$2" >"$tmp/$1/mind.toml"
+    printf '[package]\nname = "%s"\nversion = "1.0.0"\nlicense = "MIT"\n%b' "$(basename "$1")" "$2" >"$tmp/$1/mind.toml"
     printf '%b' "${3:-let x = 1;\n}" >"$tmp/$1/lib.dr"
 }
 

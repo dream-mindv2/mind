@@ -57,7 +57,7 @@ let opts = [
     cli.value "" "package-version" "V" "package this version, whatever the manifest says",
     cli.value "" "release" "N" "the package's own revision (default: [ship] release, or 1)",
     cli.value "" "arch" "ARCH" "the machine it is for: x86_64, aarch64, all, or native",
-    cli.value "" "os" "OS" "the system a tarball is for: linux, macos, or native",
+    cli.value "" "os" "OS" "the system a tarball is for: linux, macos, android, or native",
 
     cli.section "what to write",
     cli.value "o" "out" "DIR" "where packages go" |> cli.default_to "dist",

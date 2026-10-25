@@ -192,7 +192,12 @@ with a `.SRCINFO` identical to what `makepkg --printsrcinfo` writes. The
 install script picks the tarball for `uname`, checks its SHA-256 before
 unpacking anything, and installs into `$PREFIX`, or `/usr/local` as root, or
 `~/.local` otherwise. Given a tarball already downloaded as its argument, it
-checks that one the same way.
+checks that one the same way. With `[ship.installer] layout = "toolchain"` it
+installs what `mind toolchain` manages instead: the tarball whole into
+`~/.mindv2/toolchains/VERSION`, `current` linked to it, and an `env` file the
+shell's startup files source to put it on `PATH` (dream-mindv2/toolchain's
+release is made so). `--os android` makes a tarball for Termux, which the
+script recognises by `uname -o`.
 
 ## A release on several machines
 

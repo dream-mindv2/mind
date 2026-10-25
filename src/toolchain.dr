@@ -1,0 +1,435 @@
+// Toolchains: the language installed side by side, one of them in use.
+//
+// A toolchain is one release of the whole language at versions that belong
+// together -- the VM, the compiler, `mind`, the language server and the
+// standard library -- as one tarball, built and signed by
+// dream-mindv2/toolchain. Each is unpacked whole into its own directory,
+//
+//     ~/.mindv2/toolchains/0.3.0/bin/dream, bin/mind, lib/dream/{std, dreams.dream, ..}
+//
+// and `~/.mindv2/current` is a link to the one in use, whose `bin` is on
+// `PATH`. Nothing else is needed to make that work, because a packaged VM
+// already finds its standard library and compiler beside itself (the
+// installation, in std.install): each toolchain's VM uses its own, whichever
+// is current, so two of them never mix. Changing toolchains is changing a
+// link. There are no proxy programs, as rustup has: what runs is the
+// toolchain's own `dream` and `mind`.
+//
+// **A project can pin one**, in its manifest:
+//
+//     [toolchain]
+//     version = "0.3.0"
+//
+// and `mind`, run in that project, hands the command to that toolchain's
+// `mind` -- installing it first, if it is not here -- so a project builds
+// with the language it was written for, whatever is current. A `mind` built
+// from source, which has no toolchain of its own (`running`), does what it is
+// asked and leaves the pin alone: it is somebody working on the language.
+//
+// **What is installed is what was signed.** A release publishes its tarballs,
+// `SHA256SUMS` -- each tarball's SHA-256 -- and `toolchain.sig`, a `release`
+// statement (sign.dr) over that file's own hash, by a key `mind` was built
+// knowing (`keys`), followed through any rotation and refused once revoked
+// (`sign.decide`). A tarball is used only if its SHA-256 is the one the
+// signed sums give. Where releases are is a small file on the toolchain's
+// site, `channel.json` -- the versions there are, the latest, and the URL
+// each file is downloaded from -- so the site can move without a new `mind`.
+//
+// **On a Linux without the usual dynamic loader** -- NixOS without nix-ld,
+// Guix -- a published VM, which names `/lib64/ld-linux-x86-64.so.2` as every
+// distribution's programs do, cannot start. There, the VM is run by the
+// loader the system's own shell is linked against (`wrap_loader!`): its
+// binary is kept as `bin/dream.bin` and `bin/dream` runs it through that
+// loader. The VM depends on nothing but the C library (DREAM_SELF_CONTAINED
+// in dream/CMakeLists.txt), so the loader is all it lacks.
+
+import std.console;
+import std.error;
+import std.file;
+import std.install;
+import std.io;
+import std.json;
+import std.list;
+import std.num;
+import std.os;
+import std.path;
+import std.str;
+import std.toml;
+
+import fetch;
+import sign;
+import util;
+
+// --- where -------------------------------------------------------------------------
+
+/// Where toolchains are kept: `$MINDV2_HOME`, or `~/.mindv2`.
+let home! : :unit -> :string;
+let home! () = match path.from_env! "MINDV2_HOME" {
+    () => match path.home! () {
+        () => ".mindv2",
+        h => path.join h ".mindv2",
+    },
+    h => h,
+};
+
+/// The directory toolchain `v` is unpacked in.
+let dir_of! : :string -> :string;
+let dir_of! v = path.join (path.join (home! ()) "toolchains") v;
+
+/// The link to the toolchain in use.
+let current_link! : :unit -> :string;
+let current_link! () = path.join (home! ()) "current";
+
+/// The site a toolchain's releases are announced on: `$MIND_TOOLCHAIN_SITE`,
+/// which may be a directory, or the toolchain's GitHub Pages.
+let default_site = "https://dream-mindv2.github.io/toolchain";
+
+let site! : :unit -> :string;
+let site! () = match os.env! "MIND_TOOLCHAIN_SITE" { () => default_site, "" => default_site, s => s };
+
+/// The keys a toolchain release may be signed by, as `mind sign` spells them.
+/// A new key is brought in by a `rotate` statement from one of these in the
+/// release's `toolchain.sig`, not by a new `mind`.
+let keys = ["ed25519:2de62faf1dbbe86af705d3e9123a0b3cc5fe7488ba4b9e7a7c43aa6e049f479e"];
+
+// --- what this machine is -----------------------------------------------------------
+
+/// The platform a toolchain tarball is built for, as its name spells it:
+/// `linux-x86_64`, `macos-aarch64`, `android-aarch64`.
+let host! : :unit -> Result :string :string;
+let host! () = {
+    let system = match os.platform () {
+        :linux => "linux",
+        :macos => "macos",
+        :android => "android",
+        :windows => "windows",
+        other => to_string other,
+    };
+    match os.arch () {
+        :x86_64 => Result.ok (system + "-x86_64"),
+        :aarch64 => Result.ok (system + "-aarch64"),
+        other => Result.error ("there are no toolchains for " + system + " on " + to_string other),
+    }
+};
+
+/// The tarball of toolchain `v` for platform `host`, as release.dr names it.
+let tarball_name : :string -> :string -> :string;
+let tarball_name v host = "dream-" + v + "-" + host + ".tar.gz";
+
+// --- versions ---------------------------------------------------------------------------
+
+/// A version as numbers, for ordering: `0.10.0` after `0.9.2`. Anything
+/// that is not numbers sorts as text after them.
+let order_key : :string -> [:any];
+let order_key v = list.map (fn part -> match num.parse_int part { () => [1, part], n => [0, n] }) (str.split "." v);
+
+/// Newest first.
+let newest_first : [:string] -> [:string];
+let newest_first vs = list.reverse (list.sort_on order_key vs);
+
+/// The toolchains unpacked here, newest first.
+let installed! : :unit -> [:string];
+let installed! () = {
+    let root = path.join (home! ()) "toolchains";
+    if not (io.is_dir! root) { [] } else {
+        newest_first (list.filter (fn v -> io.exists! (path.join (dir_of! v) "bin/dream")) (list.map path.basename (file.list! root)))
+    }
+};
+
+/// The toolchain in use, or `()`: the one `current` links to.
+let current! : :unit -> :string | :unit;
+let current! () = {
+    let link = current_link! ();
+    if not (io.is_link! link) { () } else {
+        match io.read_link! link {
+            () => (),
+            target => path.basename (str.trim_suffix "/" target),
+        }
+    }
+};
+
+/// The toolchain this `mind` belongs to, from the `toolchain.toml` beside
+/// its standard library; `()` for one built from source.
+let running! : :unit -> :string | :unit;
+let running! () = match install.holding! "toolchain.toml" {
+    () => (),
+    dir => match file.read! (path.join dir "toolchain.toml") {
+        () => (),
+        text => match toml.parse text {
+            Result.ok(doc) => match toml.get () doc "" "version" { () => (), v => to_string v },
+            Result.error(_) => (),
+        },
+    },
+};
+
+/// The version a project pins, or `()`.
+let pinned : :map -> :string | :unit;
+let pinned manifest = match manifest.["toolchain" else ()] {
+    () => (),
+    t => match t.["version" else ()] { () => (), v => to_string v },
+};
+
+// --- the channel -------------------------------------------------------------------
+
+/// What the site says: the versions released, the latest, and where each
+/// file of a release is downloaded from (`{version}` and `{file}` filled in).
+mapping Channel {
+    latest : :string = ""
+    versions : [:string] = []
+    download : :string = ""
+}
+
+/// The text at `url` -- a URL, or a path when the site is a directory.
+let fetch_text! : :string -> Result :string :string;
+let fetch_text! url = if is_url url { fetch.run! ("downloading " + url) "curl" ["-fsSL", url] } else {
+    match file.read! url { () => Result.error ("cannot read " + url), t => Result.ok t }
+};
+
+/// `url` saved at `dest`.
+let download! : :string -> :string -> Result :unit :string;
+let download! url dest = if is_url url {
+    match fetch.run! ("downloading " + url) "curl" ["-fsSL", "-o", dest, url] { Result.ok(_) => Result.ok (), Result.error(e) => Result.error e }
+} else {
+    match try! { file.copy! url dest; Result.ok () } catch e { Result.error ("cannot copy " + url + ": " + to_string e) } { r => r }
+};
+
+priv let is_url u = str.starts_with "https://" u || str.starts_with "http://" u || str.starts_with "file://" u;
+
+let channel! : :unit -> Result Channel :string;
+let channel! () = {
+    let? text = fetch_text! (site! () + "/channel.json");
+    match json.parse text {
+        Result.ok(doc) => Result.ok (Channel.new ()
+            |> Channel.set_latest (doc.["latest" else ""])
+            |> Channel.set_versions (newest_first (doc.["versions" else []]))
+            |> Channel.set_download (doc.["download" else ""])),
+        Result.error(why) => Result.error ("the toolchain channel at " + site! () + " is not JSON: " + why),
+    }
+};
+
+/// Where `file` of release `v` is downloaded from.
+let url_of : Channel -> :string -> :string -> :string;
+let url_of ch v file = str.replace "{file}" file (str.replace "{version}" v (Channel.download ch));
+
+/// `latest`, or a version the channel lists.
+let resolve : Channel -> :string -> Result :string :string;
+let resolve ch wanted = match wanted {
+    "latest" => if Channel.latest ch == "" { Result.error "the channel names no latest toolchain" } else { Result.ok (Channel.latest ch) },
+    v => if list.contains v (Channel.versions ch) { Result.ok v }
+         else { Result.error ("there is no toolchain " + v + "; `mind toolchain list --available` lists them") },
+};
+
+// --- checking what arrived -------------------------------------------------------------
+
+/// The SHA-256 the sums give for `file`, or `()`.
+let sum_for : :string -> :string -> :string | :unit;
+let sum_for sums file = match list.filter (fn words -> list.length words == 2 && list.nth 1 words == file)
+                                          (list.map str.words (str.lines sums)) {
+    [[sum, _], .._] => sum,
+    _ => (),
+};
+
+/// Whether `sig` is a signature, by a trusted key, of `sums` as release `v`.
+/// Keys trusted besides `keys`, from `$MIND_TOOLCHAIN_KEYS` (separated by
+/// spaces or commas): a private mirror's, or a test's. Whoever can set this
+/// can already run anything as you, so it opens nothing.
+let extra_keys! : :unit -> [:string];
+let extra_keys! () = match os.env! "MIND_TOOLCHAIN_KEYS" {
+    () => [],
+    text => str.words (str.replace "," " " text),
+};
+
+let check_signature! : :string -> :string -> :string -> Result :unit :string;
+let check_signature! v sums_hash sig = {
+    let roots = list.flat_map (fn k -> match sign.key_bytes k { () => [], b => [b] }) (list.append keys (extra_keys! ()));
+    let policy = sign.Policy.new () |> sign.Policy.set_roots roots |> sign.Policy.set_release ("v" + v)
+        |> sign.Policy.set_required true;
+    match sign.decide policy sums_hash sig {
+        Result.ok(_) => Result.ok (),
+        Result.error(why) => Result.error ("toolchain " + v + " " + why),
+    }
+};
+
+// --- installing ----------------------------------------------------------------------
+
+/// Toolchain `v` downloaded, checked and unpacked, unless it is here already.
+let install! : Channel -> :string -> Result :string :string;
+let install! ch v = {
+    let dir = dir_of! v;
+    if io.exists! (path.join dir "bin/dream") { Result.ok dir } else {
+        let? host = host! ();
+        let tarball = tarball_name v host;
+        let work = path.join (home! ()) ("tmp-" + v);
+        file.remove_all! work
+        file.mkdir_all! work
+        let result = fetch_and_unpack! ch v host tarball work dir;
+        file.remove_all! work
+        result
+    }
+};
+
+priv let fetch_and_unpack! ch v host tarball work dir = {
+    console.print! ("downloading toolchain " + v + " for " + host)
+    let sums_path = path.join work "SHA256SUMS";
+    let sig_path = path.join work "toolchain.sig";
+    let tar_path = path.join work tarball;
+    let? _ = download! (url_of ch v "SHA256SUMS") sums_path;
+    let? _ = download! (url_of ch v "toolchain.sig") sig_path;
+    let sums = match file.read! sums_path { () => "", t => t };
+    let sig = match file.read! sig_path { () => "", t => t };
+    let? _ = check_signature! v ("sha256:" + io.digest! sums_path) sig;
+    let? want = match sum_for sums tarball {
+        () => Result.error ("toolchain " + v + " has no build for " + host),
+        s => Result.ok s,
+    };
+    let? _ = download! (url_of ch v tarball) tar_path;
+    let got = io.digest! tar_path;
+    let? _ = if got == want { Result.ok () } else {
+        Result.error (tarball + " is not the tarball that was signed: its SHA-256 is " + got + ", not " + want)
+    };
+    let unpacked = path.join work "unpacked";
+    file.mkdir_all! unpacked
+    let? _ = fetch.run! ("unpacking " + tarball) "tar" ["-xzf", tar_path, "-C", unpacked, "--strip-components", "1"];
+    let? _ = if io.exists! (path.join unpacked "bin/dream") { Result.ok () } else { Result.error (tarball + " holds no bin/dream") };
+    wrap_loader! unpacked
+    file.mkdir_all! (path.join (home! ()) "toolchains")
+    io.rename! unpacked dir
+    Result.ok dir
+};
+
+/// Point `current` at toolchain `v`: a new link renamed over the old one, so
+/// there is no moment without one.
+let use! : :string -> :unit;
+let use! v = {
+    let link = current_link! ();
+    let fresh = link + ".new";
+    if io.is_link! fresh || io.exists! fresh { io.remove! fresh }
+    io.symlink! (path.join "toolchains" v) fresh
+    io.rename! fresh link
+};
+
+/// Toolchain `v` removed. Not the one in use.
+let remove! : :string -> Result :unit :string;
+let remove! v =
+    if current! () == v { Result.error ("toolchain " + v + " is the one in use; `mind toolchain use` another first") }
+    else if not (io.is_dir! (dir_of! v)) { Result.error ("toolchain " + v + " is not installed") }
+    else { file.remove_all! (dir_of! v); Result.ok () };
+
+// --- a Linux without the usual loader ---------------------------------------------------
+
+/// The dynamic loader every distribution's programs name, for this machine.
+let fhs_loader : :string -> :string;
+let fhs_loader machine = if machine == "aarch64" { "/lib/ld-linux-aarch64.so.1" } else { "/lib64/ld-linux-x86-64.so.2" };
+
+/// The interpreter an ELF executable names (`PT_INTERP`), or `()`. Read from
+/// its program headers: a 64-bit little-endian ELF, which is every one this
+/// is asked about.
+let elf_interpreter : :string -> :string | :unit;
+let elf_interpreter bytes = {
+    let n = str.byte_length bytes;
+    let le width at = list.fold (fn acc i -> acc * 256 + str.byte (at + width - 1 - i) bytes) 0 (list.range 0 width);
+    if n < 64 || str.slice 0 4 bytes != "\u{7f}ELF" || str.byte 4 bytes != 2 { () } else {
+        let phoff = le 8 32;
+        let phentsize = le 2 54;
+        let phnum = le 2 56;
+        let rec look i = if i >= phnum { () } else {
+            let at = phoff + i * phentsize;
+            if at + 56 > n { () }
+            else if le 4 at == 3 {
+                let off = le 8 (at + 8);
+                let size = le 8 (at + 32);
+                if off + size > n || size == 0 { () } else { str.trim_suffix "\u{0}" (str.slice off size bytes) }
+            } else { look (i + 1) }
+        };
+        look 0
+    }
+};
+
+/// The loader this system's own programs use: the one `sh` names.
+let system_loader! : :unit -> :string | :unit;
+let system_loader! () = {
+    let candidates = ["/run/current-system/sw/bin/sh", "/bin/sh", "/usr/bin/env"];
+    let rec try_each! cs = match cs {
+        [] => (),
+        [c, ..rest] => match (if io.exists! c { file.read! c } else { () }) {
+            () => try_each! rest,
+            bytes => match elf_interpreter bytes { () => try_each! rest, l => if io.exists! l { l } else { try_each! rest } },
+        },
+    };
+    try_each! candidates
+};
+
+/// On a Linux where the usual loader is missing, `bin/dream` becomes a
+/// script running the VM through the system's own loader. It says where the
+/// toolchain is (`MINDV2_PATH`), since a VM started by a loader is the
+/// loader as far as `/proc/self/exe` can tell, and that is how it would
+/// otherwise find its standard library.
+let wrap_loader! : :string -> :unit;
+let wrap_loader! dir = match host! () {
+    Result.ok(h) if str.starts_with "linux-" h => {
+        let machine = str.trim_prefix "linux-" h;
+        let forced = os.env! "MIND_TOOLCHAIN_WRAP" == "1";
+        if io.exists! (fhs_loader machine) && not forced { () } else {
+            match system_loader! () {
+                () => console.error! ("mind: this system has no " + fhs_loader machine
+                                      + " and its loader could not be found; the toolchain may not start"),
+                loader => {
+                    let bin = path.join dir "bin";
+                    io.rename! (path.join bin "dream") (path.join bin "dream.bin")
+                    file.write! (path.join bin "dream") (loader_script loader)
+                    io.chmod! (path.join bin "dream") 0o755
+                },
+            }
+        }
+    },
+    _ => (),
+};
+
+let loader_script : :string -> :string;
+let loader_script loader =
+    "#!/bin/sh\n"
+    + "# This system has no FHS dynamic loader (NixOS, Guix), so the VM is run by\n"
+    + "# the one its own programs use. Written by `mind toolchain install`.\n"
+    + "here=$(cd \"$(dirname \"$0\")/..\" && pwd)\n"
+    + "export MINDV2_PATH=\"${MINDV2_PATH:-$here/lib/dream}\"\n"
+    + "exec " + loader + " \"$here/bin/dream.bin\" \"$@\"\n";
+
+// --- handing a pinned project to its toolchain ---------------------------------------------
+
+/// `args` run by toolchain `v`'s `mind`, which takes the process over. With
+/// `MINDV2_PATH` said for it, so that nothing of this toolchain's leaks in.
+let delegate! : :string -> [:string] -> Result :unit :string;
+let delegate! v args = {
+    let dir = dir_of! v;
+    os.set_env! "MINDV2_PATH" (path.join dir "lib/dream")
+    os.set_env! "MIND_TOOLCHAIN_DELEGATED" v
+    match try! { os.replace! (path.join dir "bin/dream") (list.cons (path.join dir "bin/mind") args) } catch e {
+        Result.error (to_string e)
+    } { r => Result.error ("cannot run toolchain " + v + ": " + to_string r) }
+};
+
+when test {
+    import std.test;
+
+    let tests = [
+        test.case "versions sort as numbers, newest first"
+            $( test.eq! ["0.10.0", "0.9.2", "0.9.0"] (newest_first ["0.9.0", "0.10.0", "0.9.2"]) ),
+        test.case "a tarball's name"
+            $( test.eq! "dream-0.3.0-linux-x86_64.tar.gz" (tarball_name "0.3.0" "linux-x86_64") ),
+        test.case "the sums give a file's SHA-256"
+            $( test.eq! ["ab12", ()] [sum_for "ab12  a.tar.gz\ncd34  b.tar.gz\n" "a.tar.gz", sum_for "ab12  a.tar.gz\n" "c.tar.gz"] ),
+        test.case "a release's file URL"
+            $( test.eq! "https://h/v0.3.0/SHA256SUMS"
+                (url_of (Channel.new () |> Channel.set_download "https://h/v{version}/{file}") "0.3.0" "SHA256SUMS") ),
+        test.case "latest, a listed version, and one that is not"
+            $( {
+                let ch = Channel.new () |> Channel.set_latest "0.3.0" |> Channel.set_versions ["0.3.0", "0.2.0"];
+                test.eq! [Result.ok "0.3.0", Result.ok "0.2.0", true]
+                    [resolve ch "latest", resolve ch "0.2.0", Result.is_error (resolve ch "9.9.9")]
+            } ),
+        test.case "a pin is read from the manifest"
+            $( test.eq! ["0.2.0", ()] [pinned %{ "toolchain" => %{ "version" => "0.2.0" } }, pinned %{}] ),
+        test.case "the wrapper runs the VM through the given loader"
+            $( test.true! (str.contains_str "exec /nix/store/x/ld.so \"$here/bin/dream.bin\" \"$@\"" (loader_script "/nix/store/x/ld.so")) ),
+    ];
+}

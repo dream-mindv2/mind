@@ -23,6 +23,7 @@ import std.build.Target;
 
 import config;
 import fetch;
+import licenses;
 import lock;
 import manifest;
 import script;
@@ -1003,13 +1004,14 @@ let dep_hosts g =
                           (nodes g));
 
 /// Every payload the program carries: the package's own and every
-/// dependency's, as `[:ok, ["--payload", "NAME=FILE", ..]]`, or `[:error, why]`
-/// for a `[payload]` that is wrong or a name two packages give two files.
-let payload_args m g = {
+/// dependency's, and in a release build their licences, as
+/// `[:ok, ["--payload", "NAME=FILE", ..]]`, or `[:error, why]` for a
+/// `[payload]` that is wrong or a name two packages give two files.
+let payload_args! m o g = {
     let manifests = list.cons m (flat_map (fn n -> match node_manifest n { () => [], dm => [dm] }) (nodes g));
     match list.first_or () (flat_map (fn mm -> match manifest.payload_problem mm { () => [], why => [why] }) manifests) {
         () => {
-            let all = list.unique (flat_map manifest.payloads manifests);
+            let all = list.unique (list.append (flat_map manifest.payloads manifests) (licenses_payload! m o manifests));
             let clash = list.find (fn [n, p] -> list.any (fn [n2, p2] -> n2 == n && p2 != p) all) all;
             match clash {
                 () => Result.ok (repeated "--payload" (map (fn [n, p] -> n + "=" + p) all)),
@@ -1020,6 +1022,78 @@ let payload_args m g = {
         why => Result.error why,
     }
 };
+
+// --- licences ----------------------------------------------------------------------
+//
+// A program built for release carries the licences of everything in it -- its
+// own package's and every dependency's -- since a licence such as MIT's asks
+// that its text go wherever the software does, and a program is one file.
+// They are one payload, `licenses`: each licence file found at the root of a
+// package (`LICENSE`, `LICENSE-MIT`, `COPYING`, `NOTICE` and the like), under
+// a line naming the package and the file, so `payload.licenses ()`
+// (`std.payload`) is all a program's `--licenses` has to print. A debug build
+// carries none, and `licenses = false` -- in `[profile.release]`, or in
+// `[build]` for every profile -- leaves them out of a release build too.
+
+/// A release build's check that every dependency's licence allows this
+/// package's (licenses.dr): `ok`, or every dependency that does not, and
+/// why. Not for a debug build, nor once `--no-license-check` or
+/// `license-check = false` has said the author has decided.
+let license_check m o g =
+    if profile_of o != "release" || not (option o :license_check true) || not (manifest.checks_licenses m (profile_of o)) {
+        Result.ok ()
+    } else {
+        let own = match toml.get () (manifest.doc m) "package" "license" { () => "LicenseRef-Proprietary", l => to_string l };
+        let accepted = list.map to_string (toml.get [] (manifest.doc m) "licenses" "accept");
+        let problems = flat_map (fn n -> match node_manifest n {
+            () => [node_key n + " " + licenses.undeclared],
+            dm => match toml.get () (manifest.doc dm) "package" "license" {
+                () => [manifest.name dm + " " + licenses.undeclared],
+                l => match licenses.check own (to_string l) accepted {
+                    () => [],
+                    why => [manifest.name dm + " (" + to_string l + "): " + why],
+                },
+            },
+        }) (nodes g);
+        match problems {
+            [] => Result.ok (),
+            _ => Result.error ("this package is " + own + ", and its dependencies' licences do not all allow that:\n  "
+                + str.join_str "\n  " problems
+                + "\nThis is a cautious reading, not legal advice. Change the dependency or the licence; or, having decided,"
+                + " build with --no-license-check or `license-check = false` in [profile.release]."),
+        }
+    };
+
+/// Whether a file at a package's root is a licence, by its name.
+let is_license_file : :string -> :bool;
+let is_license_file name = {
+    let upper = str.upper name;
+    list.any (fn stem -> upper == stem || str.starts_with (stem + ".") upper || str.starts_with (stem + "-") upper)
+             ["LICENSE", "LICENCE", "COPYING", "NOTICE", "UNLICENSE"]
+};
+
+/// The `licenses` payload for this build, as `[name, file]` -- written into
+/// the target directory -- or nothing for a debug build, one that opts out,
+/// or packages that carry no licence.
+let licenses_payload! m o manifests =
+    if profile_of o != "release" || not (manifest.embeds_licenses m (profile_of o)) { [] } else {
+        let found = flat_map (fn mm -> {
+            let root = manifest.root mm;
+            map (fn f -> [manifest.name mm, f, path.join root f])
+                (list.sort (filter is_license_file (map path.basename (filter (fn p -> not (io.is_dir! p)) (file.list! root)))))
+        }) manifests;
+        match found {
+            [] => [],
+            _ => {
+                let text = str.concat_all (map (fn [pkg, f, at] ->
+                    "==> " + pkg + ": " + f + " <==\n" + (match file.read! at { () => "", t => t }) + "\n") found);
+                let out = path.join (target_dir m) (profile_of o + "/licenses.txt");
+                file.mkdir_all! (path.dirname out)
+                file.write! out text
+                [["licenses", out]]
+            },
+        }
+    };
 
 /// Where the standard library is.
 ///
@@ -1094,7 +1168,7 @@ let work_dir m o = option o :target_dir (target_dir m);
 
 let options = %{ :compiler => (), :defines => [], :includes => [], :hosts => [],
                  :paths => [], :flags => [], :output => (), :extra => [],
-                 :verbose => false, :dev => false,
+                 :verbose => false, :dev => false, :license_check => true,
                  // Flags for the VM that runs the compiler (`--precompile`).
                  // They go before the image, where the VM reads its own options.
                  :vm => [],
@@ -1396,10 +1470,11 @@ let forget_unit! path now = match io.stat! path {
 let compile_args! m o =
     match search_paths! m o {
         Result.error(why) => Result.error why,
-        [:ok, g, paths] => match [script_args! m o g, payload_args m g] {
-            [Result.error(why), _] => Result.error why,
-            [_, Result.error(why)] => Result.error why,
-            [Result.ok(from_scripts), Result.ok(carried)] => Result.ok (list.concat [
+        [:ok, g, paths] => match [license_check m o g, script_args! m o g, payload_args! m o g] {
+            [Result.error(why), _, _] => Result.error why,
+            [_, Result.error(why), _] => Result.error why,
+            [_, _, Result.error(why)] => Result.error why,
+            [_, Result.ok(from_scripts), Result.ok(carried)] => Result.ok (list.concat [
               [match option o :entry () { () => manifest.entry! m, e => e }],
               paths,
               repeated "-L" (list.append (manifest.package_paths m) (option o :paths [])),

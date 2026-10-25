@@ -51,9 +51,10 @@ import fetch;
 import index;
 import manifest;
 import sign;
+import toolchain;
 import util;
 
-let version = "0.2.0";
+let version = "0.3.0";
 
 /// The options, described once. `cli` parses from this list and prints the
 /// help from the same list, so an option cannot be one without being the
@@ -70,6 +71,7 @@ let opts = [
     cli.list_of "D" "define" "NAME[=V]" "define a `when` flag or value; KEY:NAME[=V] sets KEY's option",
     cli.value "" "profile" "NAME" "build with [profile.NAME] (default: debug)",
     cli.flag "" "release" "the same as --profile release",
+    cli.flag "" "no-license-check" "a release: build even if a dependency's licence does not allow this package's",
     cli.flag "" "debug" "define `debug`",
     cli.list_of "" "target" "PLATFORM" "where the image may run: linux, os=macos,arch=arm64, any",
     cli.list_of "f" "flag" "ARG" "pass this to the compiler as written",
@@ -144,6 +146,8 @@ let command_spec = [
     cli.command "docs" "compile Markdown guides and source API documentation; `docs serve` serves them" [],
     cli.command "serve" "serve a directory over HTTP on this machine (default: here)" [],
     cli.command "clean" "remove target/" [],
+    cli.command "toolchain" "the language's versions: list, install [V], use V, update, remove V, which"
+        [cli.flag "" "available" "list: every version released, not only those installed"],
     cli.command "help"  "this message" [],
 ];
 
@@ -1879,7 +1883,8 @@ let options_of! c =
                [:runtime,  cli.get () c "runtime"],
                [:verbose,  cli.flag_set c "verbose"],
                [:jobs,     jobs_of! c],
-               [:allow_downgrade, cli.flag_set c "allow-downgrade"]];
+               [:allow_downgrade, cli.flag_set c "allow-downgrade"],
+               [:license_check, not (cli.flag_set c "no-license-check")]];
 
 let run_command! c theirs = {
     let o = options_of! c;
@@ -1939,8 +1944,125 @@ let run_command! c theirs = {
                   "info"  => cmd_info! (project! ()) o,
                   "options" => cmd_options! (project! ()) o,
                   "repl"  => cmd_repl! o,
+                  "toolchain" => cmd_toolchain! c (cli.rest c),
               },
     }
+};
+
+// --- toolchains ------------------------------------------------------------------------
+//
+// The design is in toolchain.dr.
+
+/// A project that pins a toolchain other than this one has its command run
+/// by that toolchain's `mind`, installed first if it is not here. Not for
+/// `toolchain` itself, which is how a pin is acted on by hand; not for a
+/// `mind` built from source, which has no toolchain to compare; and not once
+/// handed over, so two toolchains that disagreed could not pass a command
+/// back and forth.
+let pinned_toolchain! c args = {
+    let command = match cli.chosen c { () => "", cm => cli.command_name cm };
+    let exempt = list.contains command ["toolchain", "help", "new", "init", ""];
+    if exempt || os.env! "MIND_TOOLCHAIN_DELEGATED" != () { () } else {
+        match [toolchain.running! (), match maybe_project! () { () => (), m => toolchain.pinned (manifest.doc m) }] {
+            [(), _] => (),
+            [_, ()] => (),
+            [here, pin] => if here == pin { () } else {
+                console.error! ("mind: this project pins toolchain " + pin + "; running " + command + " with it")
+                if not (list.contains pin (toolchain.installed! ())) {
+                    match toolchain.channel! () {
+                        Result.error(why) => fail! why,
+                        Result.ok(ch) => match toolchain.install! ch pin { Result.error(why) => fail! why, _ => () },
+                    }
+                }
+                match toolchain.delegate! pin args { Result.error(why) => fail! why, _ => () }
+            },
+        }
+    }
+};
+
+/// `mind toolchain ...`.
+let cmd_toolchain! c args = match args {
+    [] => toolchain_list! c,
+    ["list"] => toolchain_list! c,
+    ["install"] => toolchain_install! "latest" false,
+    ["install", v] => toolchain_install! v false,
+    ["use", v] => toolchain_install! v true,
+    ["update"] => toolchain_update! (),
+    ["remove", v] => match toolchain.remove! v {
+        Result.ok(_) => console.print! ("removed toolchain " + v),
+        Result.error(why) => fail! why,
+    },
+    ["which"] => match toolchain.current! () {
+        () => console.print! ("no toolchain is in use; `mind toolchain install` installs the latest"),
+        v => console.print! (v + "  " + toolchain.dir_of! v),
+    },
+    ["sign", release, sums] => toolchain_sign! c release sums,
+    _ => fail! "toolchain takes list, install [VERSION], use VERSION, update, remove VERSION, which, or sign RELEASE SHA256SUMS",
+};
+
+let toolchain_list! c = {
+    let here = toolchain.installed! ();
+    let current = toolchain.current! ();
+    let pin = match maybe_project! () { () => (), m => toolchain.pinned (manifest.doc m) };
+    let note v = (if v == current { "  (in use)" } else { "" }) + (if v == pin { "  (this project's)" } else { "" });
+    if cli.flag_set c "available" {
+        match toolchain.channel! () {
+            Result.error(why) => fail! why,
+            Result.ok(ch) => list.each! (fn v -> console.print! ("  " + v + (if list.contains v here { "  installed" } else { "" })
+                                                                 + (if v == toolchain.Channel.latest ch { "  latest" } else { "" }) + note v))
+                                        (toolchain.Channel.versions ch),
+        }
+    } else if here == [] {
+        console.print! "no toolchains are installed; `mind toolchain install` installs the latest"
+    } else {
+        list.each! (fn v -> console.print! ("  " + v + note v)) here
+    }
+};
+
+/// Install `wanted` -- `latest` or a version -- and, when `use` is said or
+/// nothing is in use yet, make it the one in use.
+let toolchain_install! wanted use = {
+    let installed_already = list.contains wanted (toolchain.installed! ());
+    let v = if installed_already { wanted } else {
+        match toolchain.channel! () {
+            Result.error(why) => fail! why,
+            Result.ok(ch) => match toolchain.resolve ch wanted {
+                Result.error(why) => fail! why,
+                Result.ok(v) => match toolchain.install! ch v {
+                    Result.error(why) => fail! why,
+                    Result.ok(dir) => { console.print! ("installed toolchain " + v + " in " + dir); v },
+                },
+            },
+        }
+    };
+    if use || toolchain.current! () == () {
+        toolchain.use! v
+        console.print! ("toolchain " + v + " is in use")
+    }
+};
+
+let toolchain_update! () = match toolchain.channel! () {
+    Result.error(why) => fail! why,
+    Result.ok(ch) => {
+        let latest = toolchain.Channel.latest ch;
+        match toolchain.current! () {
+            v if v == latest => console.print! ("toolchain " + latest + " is in use, and is the latest"),
+            was => {
+                toolchain_install! latest true
+                if was != () { console.print! ("was " + was + "; `mind toolchain use " + was + "` goes back to it") }
+            },
+        }
+    },
+};
+
+/// Sign a toolchain release: a `release` statement over its `SHA256SUMS`,
+/// written to `toolchain.sig` beside it. What the release workflow runs.
+let toolchain_sign! c release sums = {
+    let seed = signing_seed! c;
+    let h = "sha256:" + io.digest! sums;
+    let out = path.join (path.dirname sums) "toolchain.sig";
+    file.write! out (sign.with_statement (match file.read! out { () => "", t => t }) (sign.release seed release h))
+    console.print! ("signed " + sums + " (" + h + ") as " + release + " by " + sign.spell (crypto.ed25519_public seed) + " into " + out)
 };
 
 let normal_main! args =
@@ -1955,7 +2077,7 @@ let normal_main! args =
                 Result.ok(c) =>
                     if cli.flag_set c "help" { console.write! usage }
                     else if cli.flag_set c "version" { console.print! ("mind " + version) }
-                    else { run_command! c theirs },
+                    else { pinned_toolchain! c args; run_command! c theirs },
             },
     };
 

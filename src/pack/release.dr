@@ -26,6 +26,7 @@ group Asset { os : :string, machine : :string, file : :string, url : :string, sh
 /// formula lists them.
 let platforms : [[:string, :string]] = [
     ["macos", "aarch64"], ["macos", "x86_64"], ["linux", "aarch64"], ["linux", "x86_64"],
+    ["android", "aarch64"],
 ];
 
 /// The template the URLs come from: `[ship.FORMAT] url`, then `[ship] url`.

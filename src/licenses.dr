@@ -1,0 +1,193 @@
+// Whether a program's dependencies may be distributed under its licence.
+//
+// A release build (build.dr) is a program about to be handed to other people,
+// and what it may be handed out under is decided by every package in it, not
+// only its own: a GPL library compiled into an MIT program makes a program
+// that may only go out under the GPL. Dream compiles a whole program into one
+// image, so every dependency is in it. So before a release is built, each
+// dependency's licence is held to the package's own, and the build fails if
+// one does not allow it -- with the dependency and the reason named, since
+// the fixes (another dependency, another licence, the author's permission)
+// are the author's to choose. `--no-license-check`, or `license-check =
+// false` in `[profile.release]` or `[build]`, says the author has.
+//
+// **Licences are SPDX expressions**, as `[package] license` writes them:
+// `MIT`, `MIT OR Apache-2.0`, `GPL-3.0-or-later`, `(MIT OR Apache-2.0) AND
+// BSD-3-Clause`, `GPL-2.0-only WITH Classpath-exception-2.0`. A dependency
+// under `A OR B` may be taken under whichever fits; under `A AND B`, both
+// apply. The package's own `A OR B` is offered to its users as either, so a
+// dependency must fit every choice.
+//
+// **The rules** are the common reading, and deliberately cautious where
+// that reading is argued over:
+//
+// - permissive licences (MIT, BSD, Apache-2.0, ISC, Zlib, ..) may go into
+//   anything, but for Apache-2.0 into GPL-2.0-only, which the FSF says is
+//   not allowed;
+// - MPL-2.0 is copyleft per file, and may go into anything;
+// - GPL and AGPL make the whole program theirs: the package must be under a
+//   version they allow;
+// - LGPL is treated as the GPL, because its allowance for proprietary use
+//   asks that a user can relink the program against a changed library, and
+//   one Dream image cannot be relinked in part;
+// - a dependency that declares no licence may not be redistributed at all
+//   ("all rights reserved"), and one this does not know cannot be judged:
+//   both fail, the second unless `[licenses] accept` names it.
+//
+// None of this is legal advice, and it says so when it fails.
+
+import std.list;
+import std.str;
+
+/// What a licence asks of the program it is in.
+union Kind {
+    permissive
+    file_copyleft
+    // The licences the whole program may be under: GPL-2.0-only allows only
+    // itself; GPL-3.0-or-later allows GPL-3.0 and AGPL-3.0.
+    copyleft(allows : [:string])
+    unknown
+}
+
+/// The licences this knows, by SPDX identifier.
+let kind : :string -> Kind;
+let kind id = match id {
+    "MIT" => Kind.permissive, "MIT-0" => Kind.permissive, "Apache-2.0" => Kind.permissive,
+    "BSD-2-Clause" => Kind.permissive, "BSD-3-Clause" => Kind.permissive, "0BSD" => Kind.permissive,
+    "ISC" => Kind.permissive, "Zlib" => Kind.permissive, "BSL-1.0" => Kind.permissive,
+    "Unlicense" => Kind.permissive, "CC0-1.0" => Kind.permissive, "PSF-2.0" => Kind.permissive,
+    "Unicode-3.0" => Kind.permissive, "Unicode-DFS-2016" => Kind.permissive,
+    "MPL-2.0" => Kind.file_copyleft,
+    "GPL-2.0-only" => Kind.copyleft ["GPL-2.0"],
+    "GPL-2.0-or-later" => Kind.copyleft ["GPL-2.0", "GPL-3.0", "AGPL-3.0"],
+    "GPL-3.0-only" => Kind.copyleft ["GPL-3.0", "AGPL-3.0"],
+    "GPL-3.0-or-later" => Kind.copyleft ["GPL-3.0", "AGPL-3.0"],
+    "AGPL-3.0-only" => Kind.copyleft ["AGPL-3.0"],
+    "AGPL-3.0-or-later" => Kind.copyleft ["AGPL-3.0"],
+    "LGPL-2.1-only" => Kind.copyleft ["GPL-2.0", "GPL-3.0", "AGPL-3.0", "LGPL-2.1"],
+    "LGPL-2.1-or-later" => Kind.copyleft ["GPL-2.0", "GPL-3.0", "AGPL-3.0", "LGPL-2.1", "LGPL-3.0"],
+    "LGPL-3.0-only" => Kind.copyleft ["GPL-3.0", "AGPL-3.0", "LGPL-3.0"],
+    "LGPL-3.0-or-later" => Kind.copyleft ["GPL-3.0", "AGPL-3.0", "LGPL-3.0"],
+    _ => Kind.unknown,
+};
+
+/// The licence family a package's own licence puts the program in: what a
+/// copyleft dependency's `allows` is compared against, `()` for a licence
+/// that is not one of those.
+let family : :string -> :string | :unit;
+let family id = match id {
+    "GPL-2.0-only" => "GPL-2.0", "GPL-2.0-or-later" => "GPL-2.0",
+    "GPL-3.0-only" => "GPL-3.0", "GPL-3.0-or-later" => "GPL-3.0",
+    "AGPL-3.0-only" => "AGPL-3.0", "AGPL-3.0-or-later" => "AGPL-3.0",
+    "LGPL-2.1-only" => "LGPL-2.1", "LGPL-2.1-or-later" => "LGPL-2.1",
+    "LGPL-3.0-only" => "LGPL-3.0", "LGPL-3.0-or-later" => "LGPL-3.0",
+    _ => (),
+};
+
+// --- expressions -------------------------------------------------------------------
+
+/// An SPDX expression as the choices it offers: a list of alternatives
+/// (`OR`), each the licences that all apply together (`AND`). `WITH` and
+/// its exception are kept with the licence's name, and judged by the
+/// licence. A malformed expression is `()`.
+let choices : :string -> [[:string]] | :unit;
+let choices text = {
+    let tokens = str.words (str.replace "(" " ( " (str.replace ")" " ) " text));
+    match expr tokens {
+        () => (),
+        [alts, []] => alts,
+        _ => (),
+    }
+};
+
+// expr := term (OR term)* ; term := atom (AND atom)* ; atom := ID [WITH ID] | ( expr )
+priv let rec expr tokens = match term tokens {
+    () => (),
+    [left, ["OR", ..rest]] => match expr rest { () => (), [right, after] => [list.append left right, after] },
+    done => done,
+};
+
+priv let rec term tokens = match atom tokens {
+    () => (),
+    [left, ["AND", ..rest]] => match term rest {
+        () => (),
+        [right, after] => [list.flat_map (fn a -> list.map (fn b -> list.append a b) right) left, after],
+    },
+    done => done,
+};
+
+priv let atom tokens = match tokens {
+    ["(", ..rest] => match expr rest { [inner, [")", ..after]] => [inner, after], _ => () },
+    [id, "WITH", exception, ..rest] if is_id id && is_id exception => [[[id]], rest],
+    [id, ..rest] if is_id id => [[[id]], rest],
+    _ => (),
+};
+
+priv let is_id t = t != "" && not (list.contains t ["(", ")", "AND", "OR", "WITH"]);
+
+// --- judging ---------------------------------------------------------------------
+
+/// Whether a dependency under licence `dep` may go into a program under
+/// `own`, both single identifiers; `()` when it may, or why not.
+let fits : :string -> :string -> :string | :unit;
+let fits own dep = match kind dep {
+    Kind.unknown => dep + " is a licence this check does not know",
+    Kind.permissive => if dep == "Apache-2.0" && own == "GPL-2.0-only" {
+        "Apache-2.0 cannot be combined with GPL-2.0-only"
+    } else { () },
+    Kind.file_copyleft => (),
+    Kind.copyleft(allows) => match family own {
+        () => dep + " makes the whole program " + dep + ", and this package is " + own,
+        f => if list.contains f allows { () } else { dep + " does not allow the program to be " + own },
+    },
+};
+
+/// Why `dep` (an expression) may not go into a program offered under
+/// `own` (an expression), or `()` when it may: some choice of the
+/// dependency's must fit every choice of the package's. `accepted` are
+/// identifiers taken as permissive whatever this thinks of them.
+let check : :string -> :string -> [:string] -> :string | :unit;
+let check own dep accepted = match [choices own, choices dep] {
+    [(), _] => "this package's licence `" + own + "` is not an SPDX expression",
+    [_, ()] => "`" + dep + "` is not an SPDX expression",
+    [owns, deps] => {
+        // Every licence the package is offered under, one at a time: a
+        // choice of AND'd licences is offered under all of them at once.
+        let own_ids = list.unique (list.concat owns);
+        let reasons alt = list.flat_map (fn d -> if list.contains d accepted { [] } else {
+            list.flat_map (fn o -> match fits o d { () => [], why => [why] }) own_ids
+        }) alt;
+        match list.find (fn alt -> reasons alt == []) deps {
+            () => list.head (reasons (list.head deps)),
+            _ => (),
+        }
+    },
+};
+
+/// Why a dependency with no licence declared fails.
+let undeclared = "declares no licence, which means it may not be redistributed";
+
+when test {
+    import std.test;
+
+    let tests = [
+        test.case "expressions as choices"
+            $( test.eq! [[["MIT"], ["Apache-2.0"]], [["MIT", "BSD-3-Clause"], ["Apache-2.0", "BSD-3-Clause"]],
+                         [["GPL-2.0-only"]], ()]
+                [choices "MIT OR Apache-2.0", choices "(MIT OR Apache-2.0) AND BSD-3-Clause",
+                 choices "GPL-2.0-only WITH Classpath-exception-2.0", choices "MIT OR"] ),
+        test.case "permissive into anything, MPL too"
+            $( test.eq! [(), (), (), ()] [check "MIT" "BSD-3-Clause" [], check "MIT OR Apache-2.0" "MIT" [],
+                                          check "GPL-3.0-only" "Apache-2.0" [], check "MIT" "MPL-2.0" []] ),
+        test.case "copyleft into a permissive program fails"
+            $( test.eq! [true, true] [check "MIT OR Apache-2.0" "GPL-3.0-only" [] != (), check "MIT" "LGPL-2.1-or-later" [] != ()] ),
+        test.case "GPL versions"
+            $( test.eq! [(), true, (), true]
+                [check "GPL-3.0-or-later" "GPL-2.0-or-later" [], check "GPL-3.0-only" "GPL-2.0-only" [] != (),
+                 check "AGPL-3.0-only" "GPL-3.0-or-later" [], check "GPL-2.0-only" "Apache-2.0" [] != ()] ),
+        test.case "a dependency's OR is taken as whichever fits"
+            $( test.eq! () (check "MIT" "GPL-3.0-only OR MIT" []) ),
+        test.case "unknown licences fail unless accepted"
+            $( test.eq! [true, ()] [check "MIT" "LicenseRef-Acme" [] != (), check "MIT" "LicenseRef-Acme" ["LicenseRef-Acme"]] ),
+    ];
+}
