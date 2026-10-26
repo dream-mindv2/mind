@@ -98,7 +98,10 @@ this `mind` came in, the compiler and standard library a build would use, and
 the libraries found only when used (WebKitGTK for windows, OpenCL, SQLite).
 Each line is `ok`, `warn` or `FAIL`, a failure or warning followed by what to
 do, and it exits 1 when anything failed. It changes nothing.
-[src/doctor.dr](src/doctor.dr).
+[src/doctor.dr](src/doctor.dr). Run inside a project, it adds the project's
+`[system]` libraries and whether the installed copy is its last build -- which
+`mind build` notes too, since what `dream -x NAME` runs is otherwise not what
+was just built.
 
 ## A project
 

@@ -237,12 +237,26 @@ priv let project_checks! m o = match m {
     () => [],
     m => {
         let missing = build.missing_system! (build.system_libs! m o);
-        list.map (fn lib -> match list.find (fn [l, _] -> manifest.SystemLib.name l == manifest.SystemLib.name lib) missing {
+        list.append (list.map (fn lib -> match list.find (fn [l, _] -> manifest.SystemLib.name l == manifest.SystemLib.name lib) missing {
             () => ok ("needs " + manifest.SystemLib.name lib) "found",
             [_, hint] => fail ("needs " + manifest.SystemLib.name lib)
                               (to_string (manifest.name m) + " needs it, and it is not found here") hint,
-        }) (build.system_libs! m o)
+        }) (build.system_libs! m o)) (installed_check! m o)
     },
+};
+
+/// Whether the installed copy of this package is its last build: what
+/// `dream -x NAME` runs is otherwise not what was last built here.
+priv let installed_check! : :map -> :map -> [Check];
+priv let installed_check! m o = {
+    let name = to_string (manifest.name m);
+    let built = build.output_of m o;
+    match [install.image! name, io.exists! built] {
+        [(), _] => [],
+        [at, false] => [ok "installed" at],
+        [at, true] => if file.read! at == file.read! built { [ok "installed" (at + ", the last build")] }
+                      else { [warn "installed" (at + " is not the last build (" + built + ")") "mind install"] },
+    }
 };
 
 /// Every check, in the order a person would follow them; a project's own
@@ -271,8 +285,8 @@ let report! : :any -> :map -> :bool;
 let report! m o = {
     let all = checks! m o;
     list.each! (fn c -> {
-        console.print! ("  " + label (Check.status c) + "  " + str.pad_end 14 " " (Check.name c) + Check.found c)
-        if Check.fix c != "" { console.print! ("        " + str.pad_end 14 " " "" + "-> " + Check.fix c) }
+        console.print! ("  " + label (Check.status c) + "  " + str.pad_end 22 " " (Check.name c + " ") + Check.found c)
+        if Check.fix c != "" { console.print! ("        " + str.pad_end 22 " " "" + "-> " + Check.fix c) }
     }) all
     let failed = list.count (fn c -> Check.status c == Status.fail) all;
     let warned = list.count (fn c -> Check.status c == Status.warn) all;

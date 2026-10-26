@@ -27,6 +27,7 @@ import std.crypto;
 import std.error;
 
 import std.file;
+import std.install;
 import std.io;
 import std.num;
 import std.list;
@@ -407,9 +408,34 @@ let cmd_build! m o = if graphics.is_app m {
     let image = built_app! m o "built" false;
     console.print! ("  " + image)
     console.print! "  dream runs it in a window; mind run serves it to a browser, mind run --desktop opens it"
+    warn_installed! m image
 } else {
     report_build! m o "compiled" false
     console.print! ("  " + to_string (build.output_of m o))
+    warn_installed! m (build.output_of m o)
+};
+
+/// When this package is installed (`mind install`) and the installed image is
+/// not the one just built, say so: what `dream -x NAME` runs is then not what
+/// was just built, and a fix tested in the checkout reaches no one until it is
+/// installed again. Compared byte for byte, since an image built from the same
+/// source is the same bytes. A copy rather than a link is installed because
+/// the compiler writes its output in place, and a running program has its
+/// image mapped.
+let warn_installed! : :map -> :string -> :unit;
+let warn_installed! m built = {
+    let name = to_string (manifest.name m);
+    match install.image! name {
+        () => (),
+        installed => if path.same_file! installed built { () } else {
+            let a = file.read! installed;
+            let b = file.read! built;
+            if a != () && b != () && a != b {
+                console.error! ("note: the installed " + name + " (" + installed + ") is not this build; "
+                                + "`mind install` to update it")
+            }
+        },
+    }
 };
 
 /// A graphics application built (graphics.dr), and said so, as `report_build!`
