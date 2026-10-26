@@ -144,9 +144,29 @@ schema = "sql/schema.sql"
 lies, and `payload.text "schema"` a copy as an ordinary string, for a small
 file. A dependency's payloads go into every program that uses it, since its
 code reads them; two packages naming two different files the same is an error,
-as is a name with `/` or `=` in it. It is the compiler's `--payload NAME=FILE`
-written down once, and a build script's `build.payload` is the same for a file
-that has to be made first.
+as is a name with `=` in it or one beginning `graphics/` (an application's
+page). It is the compiler's `--payload NAME=FILE` written down once, and a
+build script's `build.payload` is the same for a file that has to be made
+first.
+
+`[system]` lists the C libraries the program needs on the machine it runs on
+-- what it reaches through `std.foreign`, SQLite through `std.sql`, WebKitGTK
+for a window -- each as `std.foreign`'s `system_version` names it, with its
+major version, and optionally the package that provides it under each package
+manager:
+
+```toml
+[system]
+sqlite3 = { version = "0", apt = "libsqlite3-0", dnf = "sqlite-libs", pacman = "sqlite", brew = "sqlite", nix = "sqlite" }
+"webkit2gtk-4.1" = "0"
+```
+
+`mind build`, `run` and `install` look for each -- the package's and every
+dependency's -- the way the program will when it first calls one, and warn
+about any that is missing, naming the command that installs it with this
+machine's package manager (apt, dnf, pacman, zypper, apk, brew or nix) or
+`$DREAM_LIB_NAME`, which names its file outright. A build does not need them,
+so it succeeds either way; `mind doctor` in the project lists them too.
 
 **A release build carries the licences** of its package and of every
 dependency: each licence file at a package's root (`LICENSE`, `LICENSE-MIT`,

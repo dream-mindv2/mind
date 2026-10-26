@@ -201,6 +201,57 @@ let payload_problem m =
             [root m + "/mind.toml: [payload] `" + n + "` should be a path, as a string"]
         } else { [] }) (map.pairs (toml.section (doc m) "payload")));
 
+// --- `[system]`: C libraries the program needs where it runs ----------------
+//
+// A package that calls a C library -- SQLite through `std.sql`, WebKitGTK for
+// a window -- needs it on every machine the program runs on, and finds out it
+// is missing only there, when the call is first made. `[system]` says so
+// ahead of time:
+//
+//     [system]
+//     sqlite3 = "0"
+//     webkit2gtk-4.1 = { version = "0", apt = "libwebkit2gtk-4.1-0", dnf = "webkit2gtk4.1",
+//                        pacman = "webkit2gtk-4.1", nix = "webkitgtk_4_1" }
+//
+// Each key is the library as `std.foreign`'s `system_version` names it (its
+// file is `libNAME.so.VERSION` on Linux), and `mind` looks for it the same
+// way, so what it reports is what the program will find. The package names,
+// one per package manager, are what to install when it is missing; a
+// dependency's entries travel with it, as its payloads do.
+
+/// A C library the program needs: its name, its major version (`""` for
+/// any), and the package that provides it, by package manager.
+mapping SystemLib {
+    name : :string = ""
+    version : :string = ""
+    packages : %{:string => :string} = %{}
+}
+
+/// An inline table's entries. Its argument is `:any` because a TOML value is a
+/// union the checker cannot narrow from `type_of`; callers test first.
+priv let table_pairs : :any -> [[:string, :any]];
+priv let table_pairs t = map.pairs t;
+
+/// This package's `[system]` libraries, sorted by name.
+let system_libs : :map -> [SystemLib];
+let system_libs m = list.sort_by (fn a b -> SystemLib.name a < SystemLib.name b)
+    (list.map (fn [n, v] -> match type_of v {
+        :string => SystemLib.new () |> SystemLib.set_name n |> SystemLib.set_version v,
+        _ => SystemLib.new () |> SystemLib.set_name n |> SystemLib.set_version (to_string (v.["version" else ""]))
+                 |> SystemLib.set_packages (map.from_pairs (list.filter (fn [k, p] -> k != "version" && type_of p == :string)
+                                                                        (table_pairs v))),
+    }) (map.pairs (toml.section (doc m) "system")));
+
+/// What is wrong with this manifest's `[system]`, or `()`.
+let system_problem : :map -> :string | :unit;
+let system_problem m =
+    list.first_or () (list.flat_map (fn [n, v] -> match type_of v {
+        :string => [],
+        :map => if type_of (v.["version" else ""]) == :string { [] }
+                else { [root m + "/mind.toml: [system] `" + n + "`'s version should be a string, as \"0\""] },
+        _ => [root m + "/mind.toml: [system] `" + n + "` should be a version, as \"0\", or a table with one"],
+    }) (map.pairs (toml.section (doc m) "system")));
+
 /// Whether a build in `profile` carries the licences of its packages: on
 /// unless `licenses = false` in the profile's section, or in `[build]` for
 /// every profile (build.dr, "licences").

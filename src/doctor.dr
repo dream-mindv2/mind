@@ -25,6 +25,7 @@ import std.regex;
 import std.str;
 
 import build;
+import manifest;
 import toolchain;
 
 /// How a check came out. A warning is something that works today but is
@@ -211,7 +212,7 @@ priv let library_checks! lines = [
                  warn "windows" "WebKitGTK is not found here, so graphics applications cannot open a window"
                       ("install WebKitGTK 4.1: webkit2gtk4.1 (Fedora), libwebkit2gtk-4.1-0 (Debian, Ubuntu), "
                        + "webkit2gtk-4.1 (Arch); on Nix, in home.packages or a nix profile, since NixOS links no "
-                       + "system package's lib/ where it can be found; or set DREAM_LIB_WEBKIT2GTK to the file")
+                       + "system package's lib/ where it can be found; or set DREAM_LIB_WEBKIT2GTK_4_1 to the file")
              } else if str.starts_with "none" w { ok "windows" w }
              else { ok "windows" (str.trim (list.last_or w (str.split ": " w))) },
     },
@@ -229,9 +230,25 @@ priv let library_checks! lines = [
     },
 ];
 
-/// Every check, in the order a person would follow them.
-let checks! : :unit -> [Check];
-let checks! () = {
+/// Inside a project: each C library it and its dependencies say they need
+/// (`[system]`), found as the program would find it.
+priv let project_checks! : :any -> :map -> [Check];
+priv let project_checks! m o = match m {
+    () => [],
+    m => {
+        let missing = build.missing_system! (build.system_libs! m o);
+        list.map (fn lib -> match list.find (fn [l, _] -> manifest.SystemLib.name l == manifest.SystemLib.name lib) missing {
+            () => ok ("needs " + manifest.SystemLib.name lib) "found",
+            [_, hint] => fail ("needs " + manifest.SystemLib.name lib)
+                              (to_string (manifest.name m) + " needs it, and it is not found here") hint,
+        }) (build.system_libs! m o)
+    },
+};
+
+/// Every check, in the order a person would follow them; a project's own
+/// last, when `mind doctor` is run inside one.
+let checks! : :any -> :map -> [Check];
+let checks! m o = {
     let vm = match path.find_program! "dream" { () => "dream", v => v };
     let lines = version_lines! vm;
     list.concat [
@@ -242,6 +259,7 @@ let checks! () = {
         toolchain_check! (),
         compiler_check! vm lines,
         library_checks! lines,
+        project_checks! m o,
     ]
 };
 
@@ -249,9 +267,9 @@ priv let label : Status -> :string;
 priv let label s = match s { Status.ok => "ok  ", Status.warn => "warn", Status.fail => "FAIL" };
 
 /// Print every check, and answer whether none failed.
-let report! : :unit -> :bool;
-let report! () = {
-    let all = checks! ();
+let report! : :any -> :map -> :bool;
+let report! m o = {
+    let all = checks! m o;
     list.each! (fn c -> {
         console.print! ("  " + label (Check.status c) + "  " + str.pad_end 14 " " (Check.name c) + Check.found c)
         if Check.fix c != "" { console.print! ("        " + str.pad_end 14 " " "" + "-> " + Check.fix c) }

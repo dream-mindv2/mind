@@ -4,9 +4,11 @@
 // the compiler wants every package at once rather than a series of object
 // files -- which means a build is: find the packages, hand `dreams` their
 // directories, run it. There is nothing to cache and no link step.
+import std.char;
 import std.console;
 
 import std.file;
+import std.foreign;
 import std.install;
 import std.io;
 import std.list;
@@ -1004,13 +1006,77 @@ let dep_hosts g =
     list.concat (map (fn n -> match node_manifest n { () => [], dm => manifest.host_modules dm })
                           (nodes g));
 
+// --- the system's libraries ----------------------------------------------------
+//
+// `[system]` (manifest.dr) names the C libraries a program needs where it
+// runs. A build does not need them, so a missing one is a warning here and not
+// a failure: the image is as good as it will be, and the warning arrives on
+// the machine that built it rather than at the first call on the one that
+// runs it.
+
+/// The package managers a hint can name, in the order they are looked for --
+/// the first one this machine has is the one asked about -- each as its key
+/// in `[system]`, the program that shows it is here, and how to install a
+/// package with it. On Nix the attribute goes in a profile or home.packages:
+/// NixOS links no system package's lib/ where a library is looked for.
+let package_managers : [[:string]];
+let package_managers = [["brew", "brew", "brew install "], ["nix", "nix", "nix profile install nixpkgs#"],
+                        ["apt", "apt-get", "sudo apt install "], ["dnf", "dnf", "sudo dnf install "],
+                        ["pacman", "pacman", "sudo pacman -S "], ["zypper", "zypper", "sudo zypper install "],
+                        ["apk", "apk", "sudo apk add "]];
+
+/// What to install for `lib` here: the package this machine's package manager
+/// calls it, or every name the manifest gives when this one is not among them.
+let install_hint! : manifest.SystemLib -> :string;
+let install_hint! lib = {
+    let names = manifest.SystemLib.packages lib;
+    let here = list.find (fn [key, program, _] -> path.find_program! program != ()) package_managers;
+    let or_file = ", or set $" + foreign_variable (manifest.SystemLib.name lib) + " to its file";
+    match [here, map.pairs names] {
+        [_, []] => "install the package that provides it" + or_file,
+        [[key, _, command], pairs] if names.[key else ()] != () => command + names.[key] + or_file,
+        [_, pairs] => "install it: " + str.join_str ", " (list.map (fn [k, p] -> p + " (" + k + ")") pairs) + or_file,
+    }
+};
+
+/// `$DREAM_LIB_NAME`, which names a library's file outright ("Finding a
+/// library" in dream/src/ffi.cpp).
+let foreign_variable : :string -> :string;
+let foreign_variable name = "DREAM_LIB_" + str.of_chars (list.map (fn c -> if char.is_alnum c { char.upper c } else { '_' })
+                                                                 (str.chars name));
+
+/// Every `[system]` library of the package and its dependencies, once each.
+let system_libs! : :map -> :map -> [manifest.SystemLib];
+let system_libs! m o = match search_paths! m o {
+    [:ok, g, _] => list.unique_on manifest.SystemLib.name
+        (list.flat_map manifest.system_libs (list.cons m (list.flat_map (fn n -> match node_manifest n { () => [], dm => [dm] }) (nodes g)))),
+    _ => manifest.system_libs m,
+};
+
+/// The libraries of `libs` that cannot be found here, each with what to do.
+let missing_system! : [manifest.SystemLib] -> [[manifest.SystemLib, :string]];
+let missing_system! libs = list.flat_map (fn lib ->
+    match foreign.locate! (foreign.system_version (manifest.SystemLib.name lib) (manifest.SystemLib.version lib)) {
+        Result.ok(_) => [],
+        Result.error(_) => [[lib, install_hint! lib]],
+    }) libs;
+
+/// Say which of the program's system libraries this machine lacks.
+let warn_system! : :map -> :map -> :unit;
+let warn_system! m o = list.each! (fn [lib, hint] ->
+    console.error! ("warning: " + to_string (manifest.name m) + " needs the C library `" + manifest.SystemLib.name lib
+                    + "`, which is not found here; " + hint)) (missing_system! (system_libs! m o));
+
 /// Every payload the program carries: the package's own and every
 /// dependency's, and in a release build their licences, as
 /// `[:ok, ["--payload", "NAME=FILE", ..]]`, or `[:error, why]` for a
 /// `[payload]` that is wrong or a name two packages give two files.
 let payload_args! m o g = {
     let manifests = list.cons m (flat_map (fn n -> match node_manifest n { () => [], dm => [dm] }) (nodes g));
-    match list.first_or () (flat_map (fn mm -> match manifest.payload_problem mm { () => [], why => [why] }) manifests) {
+    let problem = fn mm -> match [manifest.payload_problem mm, manifest.system_problem mm] {
+        [(), ()] => [], [(), why] => [why], [why, _] => [why],
+    };
+    match list.first_or () (flat_map problem manifests) {
         () => {
             let all = list.unique (list.append (flat_map manifest.payloads manifests) (licenses_payload! m o manifests));
             let clash = list.find (fn [n, p] -> list.any (fn [n2, p2] -> n2 == n && p2 != p) all) all;

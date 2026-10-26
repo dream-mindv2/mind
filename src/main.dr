@@ -381,6 +381,7 @@ let report_build! m o label quiet = {
             let line = to_string label + " " + to_string (manifest.name m) + " v"
                        + to_string (manifest.version m);
             if quiet { console.error! line } else { console.print! line }
+            build.warn_system! m o
             :ok
         },
     }
@@ -414,6 +415,7 @@ let built_app! m o label quiet = match graphics.build! m o {
     Result.ok(image) => {
         let line = label + " " + to_string (manifest.name m) + " v" + to_string (manifest.version m);
         if quiet { console.error! line } else { console.print! line }
+        build.warn_system! m o
         image
     },
 };
@@ -473,6 +475,7 @@ let install_package! m o given = {
                 else if file.is_dir! dest { Result.error ("the installation destination is a directory: " + dest) }
                 else {
                     let? _ = if graphics.is_app m { graphics.build! m o } else { build.compile! m o };
+                    build.warn_system! m o
                     file.mkdir_all! dir
                     let scratch = file.temp_file_in! dir ".mind-install-";
                     let result = try! {
@@ -1948,7 +1951,7 @@ let run_command! c theirs = {
                   "options" => cmd_options! (project! ()) o,
                   "repl"  => cmd_repl! o,
                   "toolchain" => cmd_toolchain! c (cli.rest c),
-                  "doctor" => if doctor.report! () { () } else { os.exit! 1 },
+                  "doctor" => if doctor.report! (maybe_project! ()) o { () } else { os.exit! 1 },
               },
     }
 };

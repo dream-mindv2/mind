@@ -154,6 +154,17 @@ check "a payload may be named by a path" plpath 0 "by its path" run
 pkg plbad/app '[payload]\n"graphics/a" = "x.txt"\n' 'let main! = ();\n'
 mv "$tmp/plbad/app/lib.dr" "$tmp/plbad/app/main.dr"
 check "graphics/ is an application's page, and refused as a name" plbad 1 "[payload] name \`graphics/a\` cannot be empty, hold" build
+# `[system]`: a C library the program needs where it runs. Missing, it is a
+# warning that names the package to install, and the build still succeeds;
+# a dependency's travels with it; a malformed entry is refused.
+pkg sys/app '[dependencies]\ndep = "../dep"\n[system]\nc = "6"\n' 'import dep.lib;\nlet main! = ();\n'
+mv "$tmp/sys/app/lib.dr" "$tmp/sys/app/main.dr"
+pkg sys/dep '[system]\ndreamnosuchlib = { version = "1", apt = "libdreamnosuchlib1", nix = "dreamnosuchlib" }\n'
+check "a [system] library that is missing is a warning naming its package" sys 0 \
+    "needs the C library \`dreamnosuchlib\`, which is not found here" build
+pkg sysbad/app '[system]\nc = 6\n' 'let main! = ();\n'
+mv "$tmp/sysbad/app/lib.dr" "$tmp/sysbad/app/main.dr"
+check "a [system] entry that is not a version is refused" sysbad 1 "[system] \`c\` should be a version" build
 pkg plclash/app '[dependencies]\nother = "../other"\n[payload]\nnote = "mine.txt"\n' 'import other.lib;\nlet main! = ();\n'
 mv "$tmp/plclash/app/lib.dr" "$tmp/plclash/app/main.dr"
 pkg plclash/other '[payload]\nnote = "theirs.txt"\n'
