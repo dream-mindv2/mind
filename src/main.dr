@@ -123,6 +123,10 @@ let command_spec = [
     cli.command "keygen" "make a key to sign releases with, and print its public half" [],
     cli.command "sign" "sign this package's last commit as RELEASE (default: v and its version) into mind.sig" [],
     cli.command "rotate" "hand this key's trust to a new one: rotate ed25519:NEW" [],
+    cli.command "release" "release this package: patch (default), minor, major or VERSION -- bump, commit, sign, tag, push, publish"
+        [cli.flag "" "dry-run" "say what it would do, and do nothing",
+         cli.flag "" "no-publish" "stop after pushing the tag",
+         cli.value "" "index" "INDEX" "github:OWNER/REPO, a URL, or a directory (default: the first configured)"],
     cli.command "publish" "submit this package's signed last commit as RELEASE to the index"
         [cli.value "" "source" "URL" "where users fetch it from (default: [package] repository)",
          cli.value "" "index" "INDEX" "github:OWNER/REPO, a URL, or a directory (default: the first configured)"],
@@ -1257,6 +1261,100 @@ let maybe_project! () = match manifest.find! (os.cwd! ()) { Result.ok(m) => m, _
 /// key, and the package's own signature is what every later fetch of it is
 /// held to. The two must agree. A name nobody owns yet is listed once the
 /// keepers admit it.
+// --- releasing -------------------------------------------------------------------
+//
+// A release was nine steps by hand -- move the version in mind.toml and in the
+// source that prints it, commit, sign, commit mind.sig, tag, push the branch
+// and the tag, publish -- and every one was a place to slip: a source that
+// still said the last version, a tag pushed before its signature. `mind
+// release` is those steps, in that order, each said as it is done, stopping at
+// the first that fails. It starts only from a clean tree, with every
+// `[release] files` entry agreeing with the manifest, and a tag not yet taken.
+
+/// The next version: `patch`, `minor` or `major` past `from`, or `asked` as
+/// written.
+let next_version : :string -> :string -> Result :string :string;
+let next_version from asked = {
+    let? v = version.parse from;
+    match asked {
+        "patch" => Result.ok (version.show (version.bump_patch v)),
+        "minor" => Result.ok (version.show (version.bump_minor v)),
+        "major" => Result.ok (version.show (version.bump_major v)),
+        given => {
+            let? w = version.parse (str.trim_prefix "v" given);
+            if version.compare_versions w v > 0 { Result.ok (version.show w) }
+            else { Result.error ("a release must be newer than " + from + ", and " + given + " is not") }
+        },
+    }
+};
+
+priv let git! : :string -> [:string] -> :string;
+priv let git! root args = match fetch.run! ("git " + list.head args) "git" (list.append ["-C", root] args) {
+    Result.ok(out) => out,
+    Result.error(why) => fail! why,
+};
+
+priv let step! : :bool -> :string -> (:unit -> :any) -> :unit;
+priv let step! dry what act = {
+    console.print! ((if dry { "would " } else { "" }) + what)
+    if not dry { strict! (act ()) }
+};
+
+let cmd_release! m c args = {
+    let root = manifest.root m;
+    let dry = cli.flag_set c "dry-run";
+    if not (in_git! root) { fail! "a release is made from a Git checkout, and this is not one" }
+    let current = to_string (manifest.version m);
+    let next = match next_version current (list.first_or "patch" args) { Result.ok(v) => v, Result.error(why) => fail! why };
+    let tag = "v" + next;
+    let pending = list.filter (fn l -> not (str.is_empty (str.trim l))) (str.split "\n" (git! root ["status", "--porcelain"]));
+    if pending != [] { fail! ("commit or stash what is changed first: " + str.join_str "; " (list.map str.trim pending)) }
+    if str.trim (git! root ["tag", "--list", tag]) != "" { fail! (tag + " is already a tag here; releases are never re-tagged") }
+    let files = manifest.release_files m;
+    list.each! (fn f -> match file.read! f {
+        () => fail! ("[release] files lists " + f + ", which is not there"),
+        text => match manifest.version_in text {
+            () => fail! (f + " has no `let version = \"...\"` line for [release] files to move"),
+            v => if v != current { fail! (f + " says " + v + " and mind.toml " + current + ": make them agree, then release") },
+        },
+    }) files
+    console.print! ("releasing " + to_string (manifest.name m) + " " + current + " -> " + next)
+    step! dry ("set the version to " + next + " in mind.toml" + list.fold (fn acc f -> acc + ", " + path.basename f) "" files) (fn u -> {
+        // Each file read whole before it is written: an unforced read is made
+        // after `file.write!` has truncated the file, and finds it empty.
+        let rewrite! = fn f change -> {
+            let text = match file.read! f { () => fail! ("cannot read " + f), t => t };
+            let changed = change text;
+            strict! changed
+            file.write! f changed
+        };
+        rewrite! (path.join root "mind.toml") (manifest.with_version next)
+        list.each! (fn f -> rewrite! f (manifest.with_version_in current next)) files
+    })
+    list.each! (fn cmd -> step! dry ("run " + cmd) (fn u -> {
+        let r = os.exec_with! root [] "sh" ["-c", cmd] 0;
+        if not (str.is_empty r.[:out else ""]) { console.write! r.[:out] }
+        if r.[:code else 1] != 0 { fail! ("`" + cmd + "` failed: " + str.trim (r.[:err else ""])) }
+    })) (manifest.release_run m)
+    // The tree was clean when this began, so whatever is new was made by the
+    // release -- a reseeded image, a file a `run` command wrote -- and is in it.
+    step! dry ("commit \"Release " + tag + "\"") (fn u -> {
+        git! root ["add", "-A"]
+        git! root ["commit", "-qm", "Release " + tag]
+    })
+    // Read again: what is signed and published is the manifest as it now is.
+    let released = match manifest.load! root { Result.ok(r) => r, Result.error(why) => fail! why };
+    step! dry ("sign it as " + tag) (fn u -> cmd_sign! released c [tag])
+    step! dry ("commit " + sign.file_name + " and tag " + tag) (fn u -> {
+        git! root ["add", sign.file_name]
+        git! root ["commit", "-qm", "Sign " + tag]
+        git! root ["tag", "-a", tag, "-m", tag]
+    })
+    step! dry ("push the branch and " + tag) (fn u -> git! root ["push", "-q", "origin", "HEAD", tag])
+    if cli.flag_set c "no-publish" { console.print! ("not publishing: `mind publish " + tag + "` when you are ready") }
+    else { step! dry ("publish " + tag) (fn u -> cmd_publish! released c [tag]) }
+};
+
 let cmd_publish! m c args = {
     let name = to_string (manifest.name m);
     if not (index.valid_name name) { fail! ("`" + name + "` is not a name an index can hold: lowercase letters, digits, - and _") }
@@ -1952,6 +2050,7 @@ let run_command! c theirs = {
                   "repl"  => cmd_repl! o,
                   "toolchain" => cmd_toolchain! c (cli.rest c),
                   "doctor" => if doctor.report! (maybe_project! ()) o { () } else { os.exit! 1 },
+                  "release" => cmd_release! (project! ()) c (cli.rest c),
               },
     }
 };

@@ -653,6 +653,53 @@ let with_dependency section key spec text = {
     }
 };
 
+/// `text` with `[package] version` set to `v`, every other line as it was.
+let with_version : :string -> :string -> :string;
+let with_version v text = match split_section "package" (str.split "\n" text) {
+    [_, (), _, _] => text,
+    [pre, h, body, post] => join_lines (list.concat [pre, [h], put_line "version" ("version = " + quoted v) body, post]),
+};
+
+// --- `[release]`: what `mind release` does besides the manifest ------------
+//
+//     [release]
+//     files = ["src/main.dr"]        # also carry the version: `let version = "1.2.3"`
+//     run = ["just reseed"]          # after the version moves, before the commit
+//
+// A program that prints its version has it in its source as well as here, and
+// the two drift -- one said 0.1.1 for a release tagged v0.1.2. Listed, each
+// is moved with the manifest, and a release refuses to start while one
+// disagrees.
+
+/// The files that carry the version, relative to the manifest.
+let release_files : :map -> [:string];
+let release_files m = list.map (fn f -> path.join (root m) (to_string f)) (match toml.get [] (doc m) "release" "files" {
+    fs if type_of fs == :list => fs, one => [one],
+});
+
+/// The commands to run between moving the version and committing it.
+let release_run : :map -> [:string];
+let release_run m = list.map to_string (match toml.get [] (doc m) "release" "run" {
+    rs if type_of rs == :list => rs, one => [one],
+});
+
+/// A `let version` line's version, or `()` when `line` is not one.
+let version_line : :string -> :string | :unit;
+let version_line line = if not (str.starts_with "let version" (str.trim line)) { () } else {
+    match str.split "\"" line { [_, v, .._] => v, _ => () }
+};
+
+/// The version a file carries, from its first `let version = "..."` line.
+let version_in : :string -> :string | :unit;
+let version_in text = list.first_or () (list.flat_map (fn l -> match version_line l { () => [], v => [v] })
+                                                      (str.split "\n" text));
+
+/// `text` with its `let version` lines saying `to` where they said `from`.
+let with_version_in : :string -> :string -> :string -> :string;
+let with_version_in from to text = join_lines (list.map (fn l -> if version_line l == from {
+    str.replace ("\"" + from + "\"") ("\"" + to + "\"") l
+} else { l }) (str.split "\n" text));
+
 /// `[text, removed]`: `text` without the line setting `key` in `[section]`.
 let without_dependency section key text =
     match split_section section (str.split "\n" text) {
@@ -671,6 +718,12 @@ when test {
     let dep_of text = list.head (dependencies (of text));
 
     let tests = [
+        test.case "the version moves and nothing else does" $( test.eq!
+            "# top\n[package]\nname = \"d\"\nversion = \"1.2.4\"\n\n[x]\nversion = \"9\""
+            (with_version "1.2.4" "# top\n[package]\nname = \"d\"\nversion = \"1.2.3\"\n\n[x]\nversion = \"9\"") ),
+        test.case "a source's version line is read and moved" $( test.eq!
+            ["0.3.3", "// v\nlet version = \"0.3.4\";\nlet other = \"0.3.3\";"]
+            [version_in "// v\nlet version = \"0.3.3\";", with_version_in "0.3.3" "0.3.4" "// v\nlet version = \"0.3.3\";\nlet other = \"0.3.3\";"] ),
         test.case "name"     $( test.eq! "demo" (name (of "[package]\nname = \"demo\"")) ),
         test.case "version defaults"
             $( test.eq! "0.0.0" (version (of "[package]\nname = \"d\"")) ),

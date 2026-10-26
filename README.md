@@ -388,6 +388,27 @@ that serves anything else is refused and the next is asked. A copy from a
 mirror is kept by its hash, in `$MIND_HOME/cache/sha256`. `mind update` asks
 the sources and nothing else, since moving the lock is the point of it.
 
+### Releasing
+
+`mind release` is a release in one command: from a clean Git tree, it moves
+the version -- `patch` (the default), `minor`, `major`, or a version given --
+in `mind.toml` and in every file `[release] files` lists, runs each `[release]
+run` command, commits `Release vX.Y.Z` (with anything those made), signs it
+(`mind sign`), commits `mind.sig`, tags it, pushes the branch and the tag, and
+publishes (`mind publish`). Each step is said as it is done, and it stops at
+the first that fails. `--dry-run` says them and does nothing; `--no-publish`
+stops after the push.
+
+```toml
+[release]
+files = ["src/main.dr"]      # each with a `let version = "X.Y.Z"` line
+run = ["just reseed"]        # after the version moves, before the commit
+```
+
+It refuses to start from a dirty tree, with a listed file whose version
+disagrees with the manifest's, with a version that is not newer, or with a tag
+already taken: a published version is never re-tagged.
+
 ### Signed releases
 
 A hash protects a version already locked. A signature protects the one you

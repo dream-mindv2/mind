@@ -6,3 +6,7 @@ name = "mind"
 version = "0.3.3"
 repository = "https://github.com/dream-mindv2/mind"
 description = "The Dream build tool"
+
+# `mind release`: `mind --version` prints the version from the source too.
+[release]
+files = ["src/main.dr"]
