@@ -1,0 +1,279 @@
+// `mind doctor`: what this machine's Dream is, and what is wrong with it.
+//
+// Almost every way a Dream installation goes wrong is something other than
+// Dream: a `dream` earlier on `PATH` than the one meant, a shell alias left
+// from before the toolchain, a `$MINDV2_PATH` kept by a desktop session from
+// before the configuration that set it was changed, a library the window or a
+// database needs that the system has but not where anything looks. Each shows
+// up as a failure somewhere else -- "no installed image `dreams.dream`" from a
+// build script -- far from its cause. So the causes are checked here, in one
+// place, each with what was found and, when it is wrong, what to do.
+//
+// Everything is asked of what would actually run: `PATH` searched as a shell
+// searches it (`path.programs_on_path!`), the installation as the VM reads it
+// (`std.install`), libraries found as `std.foreign` finds them, and the VM's
+// own account of itself (`dream --version`). Nothing is changed.
+import std.console;
+import std.file;
+import std.foreign;
+import std.install;
+import std.io;
+import std.list;
+import std.os;
+import std.path;
+import std.regex;
+import std.str;
+
+import build;
+import toolchain;
+
+/// How a check came out. A warning is something that works today but is
+/// fragile or surprising; a failure is something that does not work.
+union Status { ok, warn, fail }
+
+/// One thing looked at: what it is, what was found, and how to put it right.
+group Check { status : Status, name : :string, found : :string, fix : :string }
+
+priv let ok name found = Check.make Status.ok name found "";
+priv let warn name found fix = Check.make Status.warn name found fix;
+priv let fail name found fix = Check.make Status.fail name found fix;
+
+/// The lines `dream --version` printed, or `[]` when it would not run.
+priv let version_lines! : :string -> [:string];
+priv let version_lines! vm = {
+    let r = try! { os.exec_for! vm ["--version"] 10000 } catch e { %{} };
+    str.lines (r.[:out else ""])
+};
+
+/// What `dream --version` says about `part` (`jit`, `windows`, ..), or `()`
+/// from a VM too old to list what it was built with.
+let feature : [:string] -> :string -> :string | :unit;
+let feature lines part = match list.find (fn l -> str.starts_with ("  " + part + " ") l) lines {
+    () => (),
+    l => str.trim (str.trim_prefix ("  " + part) l),
+};
+
+/// A program by name: what runs, and what it hides.
+priv let program_check! : :string -> :string -> Check;
+priv let program_check! name purpose = match path.programs_on_path! name {
+    [] => fail name ("not on PATH (" + purpose + ")")
+              "install a toolchain: curl -fsSL https://dream-mindv2.github.io/toolchain/install.sh | sh",
+    [first] => ok name first,
+    [first, ..rest] => warn name (first + ", which hides " + str.join_str ", " rest)
+        ("the first is what runs; remove the others, or put the directory of the one you mean first on PATH"),
+};
+
+/// The VM's own account: its version, and whether it has its JIT.
+priv let vm_check! : [:string] -> [Check];
+priv let vm_check! lines = match lines {
+    [] => [fail "dream --version" "it did not run" "reinstall the toolchain: mind toolchain install"],
+    [first, .._] => [
+        ok "vm" first,
+        match feature lines "jit" {
+            () => warn "jit" "this VM is too old to say whether it has its JIT" "mind toolchain update",
+            j => if str.starts_with "none" j {
+                     warn "jit" j "this VM interprets everything; a toolchain's has its JIT: mind toolchain install"
+                 } else { ok "jit" j },
+        },
+    ],
+};
+
+/// Shell aliases that stand in front of Dream's programs. An alias is seen
+/// only by an interactive shell, so it is read from the files shells read.
+let rc_files : [:string];
+let rc_files = ["~/.zshrc", "~/.zshenv", "~/.bashrc", "~/.bash_aliases", "~/.profile",
+                "~/.config/fish/config.fish", "/etc/zshrc", "/etc/bashrc", "/etc/bash.bashrc", "/etc/profile"];
+
+priv let alias_pattern = regex.compile "^\\s*alias\\s+(dream|mind|dreams|lucid)(?:=|\\s+)['\"]?([^'\"\\n]*)";
+
+/// The aliases one file's text gives, as `[line number, name, what it runs]`.
+let aliases_in : :string -> [[:any]];
+let aliases_in text = list.flat_map (fn [n, line] -> match regex.groups (regex.find alias_pattern line) {
+    [name, target] if name != () => [[n, name, match target { () => "", t => str.trim t }]],
+    _ => [],
+}) (list.map_indexed (fn i l -> [i + 1, l]) (str.lines text));
+
+priv let alias_checks! : :unit -> [Check];
+priv let alias_checks! () = list.flat_map (fn rc -> {
+    let at = path.expand_home! rc;
+    match try! { file.read! at } catch e { () } {
+        () => [],
+        text => list.map (fn [n, name, target] -> {
+            let where = at + ":" + to_string n;
+            match name {
+                // `dream` and `mind` are programs; an alias for either hides
+                // the one on PATH, whatever it says.
+                "dream" => fail ("alias " + name) (where + " makes `dream` run `" + target + "`")
+                               ("delete that line (NixOS: environment.shellAliases), then start a new shell"),
+                "mind" => fail ("alias " + name) (where + " makes `mind` run `" + target + "`")
+                              ("delete that line (NixOS: environment.shellAliases), then start a new shell; "
+                               + "mind is a program on PATH, not an image `dream -x` finds"),
+                _ => match install.image! name {
+                    () => fail ("alias " + name) (where + " runs `" + target + "`, and no image `" + name + "` is installed")
+                               "delete that line, or install it",
+                    _ => ok ("alias " + name) (where + ": " + target),
+                },
+            }
+        }) (aliases_in text),
+    }
+}) rc_files;
+
+/// `$MINDV2_PATH`, which a toolchain does not need, and which, kept from
+/// before one, puts an old installation in front of it.
+priv let mindv2_check! : :unit -> [Check];
+priv let mindv2_check! () = match os.env! "MINDV2_PATH" {
+    () => [ok "MINDV2_PATH" "not set: the toolchain's own installation is used"],
+    v => {
+        let dirs = list.map path.expand_home! (str.split ":" v);
+        let missing = list.filter (fn d -> not (io.is_dir! d)) dirs;
+        [warn "MINDV2_PATH" ("set to " + v + (if missing == [] { "" } else { "; not there: " + str.join_str ", " missing }))
+              ("a toolchain needs no MINDV2_PATH, and this one is searched before it; unset it where it is set "
+               + "(a shell file, NixOS environment.sessionVariables), then log out and in, since a desktop "
+               + "session keeps what it started with")]
+    },
+};
+
+/// The toolchain: the one this `mind` came in, the one selected, and those
+/// installed.
+priv let toolchain_check! : :unit -> [Check];
+priv let toolchain_check! () = {
+    let installed = toolchain.installed! ();
+    let selected = toolchain.current! ();
+    let running = toolchain.running! ();
+    let listed = if installed == [] { "none installed" } else { "installed: " + str.join_str ", " installed };
+    match [running, selected] {
+        [(), ()] => [warn "toolchain" ("this mind was built from source; " + listed)
+                          "fine in a checkout; elsewhere, install one: mind toolchain install"],
+        [r, s] if r == s || s == () => [ok "toolchain" (to_string r + " (" + listed + ")")],
+        [(), s] => [warn "toolchain" ("this mind was built from source, and toolchain " + to_string s + " is selected")
+                         "the mind on PATH is not the toolchain's: check the `mind` line above"],
+        [r, s] => [warn "toolchain" ("this mind is " + to_string r + "'s, and " + to_string s + " is selected")
+                        "a shell that started before `mind toolchain use` still has the old one; start a new one"],
+    }
+};
+
+/// The installation the `dream` on PATH searches, as its `--version` lists
+/// it. mind compiles with that `dream`, so its answer is the one that counts.
+/// A VM from before it said is asked the way it would have answered --
+/// `$MINDV2_PATH` if set and the `lib/dream` it shipped with if not, then
+/// `~/.mindv2`, as `install_dirs` in dream/src/os.cpp was before a set
+/// `$MINDV2_PATH` stopped hiding the shipped one -- rather than with this
+/// process's installation, which is another VM's when mind runs on a
+/// different one.
+priv let install_dirs_of! : :string -> [:string] -> [:string];
+priv let install_dirs_of! vm lines = match feature lines "install" {
+    () => {
+        let given = match os.env! "MINDV2_PATH" { () => [], v => list.map path.expand_home! (str.split ":" v) };
+        let target = match try! { io.read_link! vm } catch e { () } {
+            () => vm,
+            t => if path.is_absolute t { t } else { path.join (path.dirname vm) t },
+        };
+        let shipped = path.join_all (path.dirname (path.dirname target)) ["lib", "dream"];
+        let own = match path.home! () { () => [], h => [path.join h ".mindv2"] };
+        list.unique (list.filter io.is_dir! (list.concat [if given == [] { [shipped] } else { given }, own]))
+    },
+    "none" => [],
+    d => str.split ", " d,
+};
+
+/// The first of `dirs` holding `entry`, or `()`.
+priv let first_holding! dirs entry = list.find (fn d -> io.exists! (path.join d entry)) dirs;
+
+/// What a build would compile with: the compiler image and the standard
+/// library beside it, found where the VM that runs the compiler looks.
+priv let compiler_check! : :string -> [:string] -> [Check];
+priv let compiler_check! vm lines = {
+    let dirs = install_dirs_of! vm lines;
+    let chosen = match path.from_env! "DREAMS" { () => build.default_compiler, d => d };
+    let compiler = if str.contains_str "/" chosen { if io.exists! chosen { chosen } else { () } }
+                   else { match first_holding! dirs chosen { () => (), d => path.join d chosen } };
+    let std_dir = first_holding! dirs "std";
+    [
+        match compiler {
+            () => fail "compiler" ("`" + chosen + "` is in none of " + str.join_str ", " dirs)
+                       "the installation has no compiler: unset MINDV2_PATH if it is set, or mind toolchain install",
+            c => ok "compiler" c,
+        },
+        match std_dir {
+            () => fail "std" ("no standard library in " + str.join_str ", " dirs)
+                       "mind toolchain install",
+            d => ok "std" (path.join d "std"),
+        },
+    ]
+};
+
+/// What a program can load: the libraries that are found only when used.
+priv let library_checks! : [:string] -> [Check];
+priv let library_checks! lines = [
+    match feature lines "windows" {
+        () => warn "windows" "this VM is too old to say" "mind toolchain update",
+        w => if str.contains_str "no WebKitGTK found" w {
+                 warn "windows" "WebKitGTK is not found here, so graphics applications cannot open a window"
+                      ("install WebKitGTK 4.1: webkit2gtk4.1 (Fedora), libwebkit2gtk-4.1-0 (Debian, Ubuntu), "
+                       + "webkit2gtk-4.1 (Arch); on Nix, in home.packages or a nix profile, since NixOS links no "
+                       + "system package's lib/ where it can be found; or set DREAM_LIB_WEBKIT2GTK to the file")
+             } else if str.starts_with "none" w { ok "windows" w }
+             else { ok "windows" (str.trim (list.last_or w (str.split ": " w))) },
+    },
+    match feature lines "gpu" {
+        () => ok "gpu" "(not listed by this VM)",
+        g => if str.contains_str "no OpenCL" g {
+                 warn "gpu" "no OpenCL library here: tensors stay on the CPU"
+                      "install your GPU's OpenCL driver (or ocl-icd and POCL) if you want tensor.gpu"
+             } else { ok "gpu" (str.trim (list.last_or g (str.split ": " g))) },
+    },
+    match foreign.locate! (foreign.system_version "sqlite3" "0") {
+        Result.ok(file) => ok "sqlite" file,
+        Result.error(_) => warn "sqlite" "SQLite is not found, so std.sql's SQLite driver cannot open a database"
+            "install SQLite (libsqlite3-0, sqlite-libs, sqlite), or set DREAM_LIB_SQLITE3 to its file",
+    },
+];
+
+/// Every check, in the order a person would follow them.
+let checks! : :unit -> [Check];
+let checks! () = {
+    let vm = match path.find_program! "dream" { () => "dream", v => v };
+    let lines = version_lines! vm;
+    list.concat [
+        [program_check! "dream" "the VM", program_check! "mind" "the build tool"],
+        vm_check! lines,
+        alias_checks! (),
+        mindv2_check! (),
+        toolchain_check! (),
+        compiler_check! vm lines,
+        library_checks! lines,
+    ]
+};
+
+priv let label : Status -> :string;
+priv let label s = match s { Status.ok => "ok  ", Status.warn => "warn", Status.fail => "FAIL" };
+
+/// Print every check, and answer whether none failed.
+let report! : :unit -> :bool;
+let report! () = {
+    let all = checks! ();
+    list.each! (fn c -> {
+        console.print! ("  " + label (Check.status c) + "  " + str.pad_end 14 " " (Check.name c) + Check.found c)
+        if Check.fix c != "" { console.print! ("        " + str.pad_end 14 " " "" + "-> " + Check.fix c) }
+    }) all
+    let failed = list.count (fn c -> Check.status c == Status.fail) all;
+    let warned = list.count (fn c -> Check.status c == Status.warn) all;
+    console.print! ""
+    console.print! (match [failed, warned] {
+        [0, 0] => "everything looks right",
+        [0, w] => to_string w + " warning" + (if w == 1 { "" } else { "s" }) + ", nothing broken",
+        [f, _] => to_string f + " problem" + (if f == 1 { "" } else { "s" }) + " to fix",
+    })
+    failed == 0
+};
+
+when test {
+    import std.test;
+    let tests = [
+        test.case "an alias is read in either shell's spelling" $(test.eq!
+            [[2, "mind", "dream -x mind"], [3, "lucid", "dream -x lucid"]]
+            (aliases_in "export X=1\nalias mind=\"dream -x mind\"\n  alias lucid 'dream -x lucid'\nalias ls=eza\n")),
+        test.case "a feature is read from dream --version" $(test.eq! ["LLVM 21.1.8", ()]
+            [feature ["dream 0.3.7 (abc)", "  jit      LLVM 21.1.8"] "jit", feature ["dream 0.1.0 (abc)"] "jit"]),
+    ];
+}

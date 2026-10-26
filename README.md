@@ -90,6 +90,16 @@ anything is unpacked; on a Linux without the usual dynamic loader (NixOS
 without nix-ld, Guix) its VM is run through the system's own loader.
 [src/toolchain.dr](src/toolchain.dr) is the design.
 
+When something about the installation is wrong, `mind doctor` says what. It
+checks which `dream` and `mind` run and what else on `PATH` they hide, the VM's
+version and its JIT, shell aliases standing in front of either, a
+`$MINDV2_PATH` a toolchain does not need, the toolchain in use against the one
+this `mind` came in, the compiler and standard library a build would use, and
+the libraries found only when used (WebKitGTK for windows, OpenCL, SQLite).
+Each line is `ok`, `warn` or `FAIL`, a failure or warning followed by what to
+do, and it exits 1 when anything failed. It changes nothing.
+[src/doctor.dr](src/doctor.dr).
+
 ## A project
 
 ```

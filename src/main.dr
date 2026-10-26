@@ -43,6 +43,7 @@ import std.vm;
 
 import pack.commands;
 import docs;
+import doctor;
 import serve;
 import build;
 import graphics;
@@ -148,6 +149,7 @@ let command_spec = [
     cli.command "clean" "remove target/" [],
     cli.command "toolchain" "the language's versions: list, install [V], use V, update, remove V, which"
         [cli.flag "" "available" "list: every version released, not only those installed"],
+    cli.command "doctor" "check this machine's Dream: PATH, aliases, MINDV2_PATH, the toolchain, the compiler, libraries" [],
     cli.command "help"  "this message" [],
 ];
 
@@ -1946,6 +1948,7 @@ let run_command! c theirs = {
                   "options" => cmd_options! (project! ()) o,
                   "repl"  => cmd_repl! o,
                   "toolchain" => cmd_toolchain! c (cli.rest c),
+                  "doctor" => if doctor.report! () { () } else { os.exit! 1 },
               },
     }
 };
