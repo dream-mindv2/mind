@@ -11,11 +11,10 @@ import std.path;
 /// shared between projects, because it is keyed by what it is -- a repository
 /// at a revision, a build step by its key -- and not by who asked.
 let mind_home! : :unit -> :string;
-let mind_home! () =
-    match path.from_env! "MIND_HOME" {
-        () => match path.home! () {
-            () => ".mind",
-            h => path.join h ".mind",
-        },
-        h => h,
-    };
+let mind_home! () = match path.from_env! "MIND_HOME" {
+    Option.some(h) => h,
+    Option.none => match path.home! () {
+        Option.none => ".mind",
+        Option.some(h) => path.join h ".mind",
+    },
+};

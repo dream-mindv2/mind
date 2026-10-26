@@ -295,7 +295,7 @@ let skeleton name summary maintainer =
 
 let cmd_init! c = {
     let path = manifest_path! c;
-    let text = match file.read! path { () => "", t => t };
+    let text = match file.read! path { Option.none => "", Option.some(t) => t };
     let doc = match toml.parse text { Result.ok(d) => d, Result.error(why) => fail! (path + ": " + why) };
     if not (list.is_empty (toml.entries doc "ship")) || str.contains_str "\n[ship]" ("\n" + text) {
         fail! (path + " already has a [ship] section")

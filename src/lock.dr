@@ -188,7 +188,7 @@ let merge old new complete = {
     list.append new (filter (fn o -> not (seen.[at o else false])) kept)
 };
 
-let load! root = match file.read! (path.join root file_name) { () => [], text => parse text };
+let load! root = match file.read! (path.join root file_name) { Option.none => [], Option.some(text) => parse text };
 
 /// Write the lock, if it changed. A lock that would record nothing is not
 /// created where there was none: a project with no dependencies, or a lone
@@ -198,8 +198,8 @@ let save! root entries = {
     let path = path.join root file_name;
     let text = render entries;
     match file.read! path {
-        () => if list.is_empty entries { () } else { file.write! path text },
-        old => if old == text { () } else { file.write! path text },
+        Option.none => if list.is_empty entries { () } else { file.write! path text },
+        Option.some(old) => if old == text { () } else { file.write! path text },
     }
 };
 

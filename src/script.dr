@@ -97,8 +97,8 @@ priv let here! () = Target.make (os.platform ()) (os.arch ());
 /// is done once.
 priv let steps_dir! : :map -> :string;
 priv let steps_dir! setting = path.absolute! (match path.from_env! "MIND_BUILD_CACHE" {
-    () => path.join (util.mind_home! ()) "build",
-    dir => dir,
+    Option.none => path.join (util.mind_home! ()) "build",
+    Option.some(dir) => dir,
 });
 
 priv let dir_of : :map -> :map -> :string;
@@ -262,8 +262,8 @@ priv let compile_driver! setting dir group = {
 
 priv let read_record! : :string -> :map;
 priv let read_record! f = match file.read! f {
-    () => %{},
-    text => match wire.decode text { Result.ok(r) => r, _ => %{} },
+    Option.none => %{},
+    Option.some(text) => match wire.decode text { Result.ok(r) => r, _ => %{} },
 };
 
 /// Whether a package's last answer is still good: the same context, and
@@ -331,7 +331,7 @@ priv let run_group! job = {
                     file.remove_all! out_file
                     match [r.[:timed_out], r.[:code]] {
                         [true, _] => Result.error ("the build scripts ran for longer than " + to_string (deadline_ms / 60000) + " minutes"),
-                        [_, 0] => match wire.decode (match answer { () => "", t => t }) {
+                        [_, 0] => match wire.decode (Option.unwrap_or "" answer) {
                             Result.ok(outcomes) if list.all (fn [_, o] -> types.accepts Outcome.type o) (map.pairs outcomes) => {
                                 strict! (map (fn [s, _, digest, record_file, record] -> {
                                     let sources = match list.any (fn [m, .._] -> Scripted.key m == Scripted.key s) moved {

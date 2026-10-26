@@ -764,8 +764,8 @@ let revoked_file! () = path.join (util.mind_home! ()) "revoked";
 /// The keys this machine has seen revoked, spelled.
 let known_revoked! () =
     match file.read! (revoked_file! ()) {
-        () => [],
-        text => list.filter (fn l -> sign.key_bytes l != ()) (map str.trim (str.split "\n" text)),
+        Option.none => [],
+        Option.some(text) => list.filter (fn l -> sign.key_bytes l != ()) (map str.trim (str.split "\n" text)),
     };
 
 /// Add keys to what this machine remembers as revoked.
@@ -824,7 +824,7 @@ let trust! ctx d dir =
                 |> sign.Policy.set_revoked (bytes (ctx.[:revoked else []]))
                 |> sign.Policy.set_release (match manifest.dep_rev d { [:tag, t] => to_string t, _ => () })
                 |> sign.Policy.set_required (ctx.[:required else false]);
-            match sign.decide p (fetch.hash! d dir) (file.read! (path.join dir sign.file_name)) {
+            match sign.decide p (fetch.hash! d dir) (Option.or_unit (file.read! (path.join dir sign.file_name))) {
                 Result.error(why) => Result.error why,
                 Result.ok(v) => Result.ok [v, spelled],
             }
@@ -1030,7 +1030,7 @@ let package_managers = [["brew", "brew", "brew install "], ["nix", "nix", "nix p
 let install_hint! : manifest.SystemLib -> :string;
 let install_hint! lib = {
     let names = manifest.SystemLib.packages lib;
-    let here = list.find (fn [key, program, _] -> path.find_program! program != ()) package_managers;
+    let here = list.find (fn [key, program, _] -> Option.is_some (path.find_program! program)) package_managers;
     let or_file = ", or set $" + foreign_variable (manifest.SystemLib.name lib) + " to its file";
     match [here, map.pairs names] {
         [_, []] => "install the package that provides it" + or_file,
@@ -1153,7 +1153,7 @@ let licenses_payload! m o manifests =
             [] => [],
             _ => {
                 let text = str.concat_all (map (fn [pkg, f, at] ->
-                    "==> " + pkg + ": " + f + " <==\n" + (match file.read! at { () => "", t => t }) + "\n") found);
+                    "==> " + pkg + ": " + f + " <==\n" + (match file.read! at { Option.none => "", Option.some(t) => t }) + "\n") found);
                 let out = path.join (target_dir m) (profile_of o + "/licenses.txt");
                 file.mkdir_all! (path.dirname out)
                 file.write! out text
@@ -1182,21 +1182,22 @@ let licenses_payload! m o manifests =
 /// being worked on -- an installed `std` older than the checkout's `dreams` is
 /// a compiler that cannot build itself.
 let stdlib_root! () = {
-    let named = path.from_env! "MIND_STDLIB";
-    if named != () { named }
-    else {
+    match path.from_env! "MIND_STDLIB" {
+    Option.some(named) => named,
+    Option.none => {
         let home = util.mind_home! ();
         let installed = path.join home "std";
         if io.is_dir! installed { home }
         else {
             match find_upwards! (os.cwd! ()) "mind" {
                 () => match install.holding! "std" {
-                    () => "mind",
-                    found => found,
+                    Option.none => "mind",
+                    Option.some(found) => found,
                 },
                 found => found,
             }
         }
+    },
     }
 };
 
@@ -1330,7 +1331,7 @@ let target_subdir specs = {
     }
 };
 
-let vm_command! () = match path.from_env! "DREAM" { () => "dream", v => v };
+let vm_command! () = match path.from_env! "DREAM" { Option.none => "dream", Option.some(v) => v };
 
 /// Which compiler to run, in the order a person would expect to be obeyed:
 /// what this build asked for, then what the package asks for, then the
@@ -1345,7 +1346,7 @@ let default_compiler = "dreams.dream";
 let choose_compiler! m explicit =
     match explicit {
         () => match manifest.compiler m {
-            () => match path.from_env! "DREAMS" { () => default_compiler, d => d },
+            () => match path.from_env! "DREAMS" { Option.none => default_compiler, Option.some(d) => d },
             c => c,
         },
         c => c,
@@ -1482,9 +1483,9 @@ let script_args! m o g =
 /// unit was computed from: `$MIND_UNITS`, or `units` in `mind`'s own
 /// directory, and `MIND_UNITS=off` for none.
 let units_args! () = match path.from_env! "MIND_UNITS" {
-    () => kept_units! (path.join (util.mind_home! ()) "units"),
-    "off" => [],
-    dir => kept_units! dir,
+    Option.none => kept_units! (path.join (util.mind_home! ()) "units"),
+    Option.some("off") => [],
+    Option.some(dir) => kept_units! dir,
 };
 
 let kept_units! dir = {

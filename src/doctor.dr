@@ -97,9 +97,9 @@ let aliases_in text = list.flat_map (fn [n, line] -> match regex.groups (regex.f
 priv let alias_checks! : :unit -> [Check];
 priv let alias_checks! () = list.flat_map (fn rc -> {
     let at = path.expand_home! rc;
-    match try! { file.read! at } catch e { () } {
-        () => [],
-        text => list.map (fn [n, name, target] -> {
+    match try! { file.read! at } catch e { Option.none } {
+        Option.none => [],
+        Option.some(text) => list.map (fn [n, name, target] -> {
             let where = at + ":" + to_string n;
             match name {
                 // `dream` and `mind` are programs; an alias for either hides
@@ -110,7 +110,7 @@ priv let alias_checks! () = list.flat_map (fn rc -> {
                               ("delete that line (NixOS: environment.shellAliases), then start a new shell; "
                                + "mind is a program on PATH, not an image `dream -x` finds"),
                 _ => match install.image! name {
-                    () => fail ("alias " + name) (where + " runs `" + target + "`, and no image `" + name + "` is installed")
+                    Option.none => fail ("alias " + name) (where + " runs `" + target + "`, and no image `" + name + "` is installed")
                                "delete that line, or install it",
                     _ => ok ("alias " + name) (where + ": " + target),
                 },
@@ -170,7 +170,7 @@ priv let install_dirs_of! vm lines = match feature lines "install" {
             t => if path.is_absolute t { t } else { path.join (path.dirname vm) t },
         };
         let shipped = path.join_all (path.dirname (path.dirname target)) ["lib", "dream"];
-        let own = match path.home! () { () => [], h => [path.join h ".mindv2"] };
+        let own = match path.home! () { Option.none => [], Option.some(h) => [path.join h ".mindv2"] };
         list.unique (list.filter io.is_dir! (list.concat [if given == [] { [shipped] } else { given }, own]))
     },
     "none" => [],
@@ -185,7 +185,7 @@ priv let first_holding! dirs entry = list.find (fn d -> io.exists! (path.join d 
 priv let compiler_check! : :string -> [:string] -> [Check];
 priv let compiler_check! vm lines = {
     let dirs = install_dirs_of! vm lines;
-    let chosen = match path.from_env! "DREAMS" { () => build.default_compiler, d => d };
+    let chosen = match path.from_env! "DREAMS" { Option.none => build.default_compiler, Option.some(d) => d };
     let compiler = if str.contains_str "/" chosen { if io.exists! chosen { chosen } else { () } }
                    else { match first_holding! dirs chosen { () => (), d => path.join d chosen } };
     let std_dir = first_holding! dirs "std";
@@ -252,9 +252,9 @@ priv let installed_check! m o = {
     let name = to_string (manifest.name m);
     let built = build.output_of m o;
     match [install.image! name, io.exists! built] {
-        [(), _] => [],
-        [at, false] => [ok "installed" at],
-        [at, true] => if file.read! at == file.read! built { [ok "installed" (at + ", the last build")] }
+        [Option.none, _] => [],
+        [Option.some(at), false] => [ok "installed" at],
+        [Option.some(at), true] => if file.read! at == file.read! built { [ok "installed" (at + ", the last build")] }
                       else { [warn "installed" (at + " is not the last build (" + built + ")") "mind install"] },
     }
 };
@@ -263,7 +263,7 @@ priv let installed_check! m o = {
 /// last, when `mind doctor` is run inside one.
 let checks! : :any -> :map -> [Check];
 let checks! m o = {
-    let vm = match path.find_program! "dream" { () => "dream", v => v };
+    let vm = match path.find_program! "dream" { Option.none => "dream", Option.some(v) => v };
     let lines = version_lines! vm;
     list.concat [
         [program_check! "dream" "the VM", program_check! "mind" "the build tool"],

@@ -142,8 +142,8 @@ let read_scripts! root doc = {
         [hook, ..rest] => match text_of (toml.get () doc "ship.scripts" hook) {
             "" => go! rest acc,
             script => match file.read! (path.join root script) {
-                () => Result.error ("[ship.scripts] " + hook + ": cannot read " + script),
-                body => go! rest acc.[hook => body],
+                Option.none => Result.error ("[ship.scripts] " + hook + ": cannot read " + script),
+                Option.some(body) => go! rest acc.[hook => body],
             },
         },
     };
@@ -153,8 +153,8 @@ let read_scripts! root doc = {
 /// The manifest file `manifest`, read and made a spec.
 let load! : :string -> Overrides -> Result Spec :string;
 let load! manifest overrides = match file.read! manifest {
-    () => Result.error ("cannot read " + manifest),
-    source => match toml.parse source {
+    Option.none => Result.error ("cannot read " + manifest),
+    Option.some(source) => match toml.parse source {
         Result.error(why) => Result.error (manifest + ": " + why),
         Result.ok(doc) => {
             let root = path.dirname manifest;

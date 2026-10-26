@@ -194,12 +194,12 @@ let hash! d dir =
 
 let cached_hash! dir =
     match file.read! (path.join dir hash_file) {
-        () => {
+        Option.none => {
             let h = tree_hash! dir;
             file.write! (path.join dir hash_file) (h + "\n")
             h
         },
-        text => str.trim text,
+        Option.some(text) => str.trim text,
     };
 
 // --- the store and the mirrors ------------------------------------------------
@@ -405,7 +405,7 @@ let commit_file = ".mind-commit";
 let commit! d dir =
     match manifest.dep_kind d {
         :git => match file.read! (path.join dir commit_file) {
-            () => match run! "git rev-parse" "git" ["-C", dir, "rev-parse", "HEAD"] {
+            Option.none => match run! "git rev-parse" "git" ["-C", dir, "rev-parse", "HEAD"] {
                 Result.ok(out) => {
                     let c = str.trim out;
                     file.write! (path.join dir commit_file) (c + "\n")
@@ -413,7 +413,7 @@ let commit! d dir =
                 },
                 _ => (),
             },
-            text => str.trim text,
+            Option.some(text) => str.trim text,
         },
         _ => (),
     };

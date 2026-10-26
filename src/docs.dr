@@ -53,7 +53,7 @@ let fail! why = {
     console.error! ("mind docs: " + why)
     os.exit! 1
 };
-let read! path = match file.read! path { () => fail! ("cannot read " + path), text => text };
+let read! path = match file.read! path { Option.none => fail! ("cannot read " + path), Option.some(text) => text };
 let page url title body text = %{ :url => url, :title => title, :body => body, :text => text };
 let html_path path = str.slice 0 (len path - 3) path + ".html";
 let ignored path = list.any (fn p -> list.contains p ["target", "build", ".git", ".hg", ".svn", "node_modules", "tests", "examples"]) (str.split "/" path);

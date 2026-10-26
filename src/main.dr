@@ -426,11 +426,11 @@ let warn_installed! : :map -> :string -> :unit;
 let warn_installed! m built = {
     let name = to_string (manifest.name m);
     match install.image! name {
-        () => (),
-        installed => if path.same_file! installed built { () } else {
+        Option.none => (),
+        Option.some(installed) => if path.same_file! installed built { () } else {
             let a = file.read! installed;
             let b = file.read! built;
-            if a != () && b != () && a != b {
+            if Option.is_some a && Option.is_some b && a != b {
                 console.error! ("note: the installed " + name + " (" + installed + ") is not this build; "
                                 + "`mind install` to update it")
             }
@@ -496,8 +496,8 @@ let install_package! m o given = {
     else if not (path.is_program_name name) { Result.error "the installed program name must be one nonempty path component" }
     else {
         match path.dream_dir! () {
-            () => Result.error "no Dream installation directory is available; set MINDV2_PATH or HOME",
-            dir => {
+            Option.none => Result.error "no Dream installation directory is available; set MINDV2_PATH or HOME",
+            Option.some(dir) => {
                 let bare = path.join dir name;
                 let dest = if file.is_file! bare { bare } else { bare + ".dream" };
                 let output = build.output_of m o;
@@ -1004,8 +1004,8 @@ let cmd_keygen! c = {
 let signing_seed! c = {
     let at = signing_key_path! c;
     match file.read! at {
-        () => fail! ("no signing key at " + at + "; `mind keygen` makes one"),
-        text => match crypto.unhex (str.trim text) {
+        Option.none => fail! ("no signing key at " + at + "; `mind keygen` makes one"),
+        Option.some(text) => match crypto.unhex (str.trim text) {
             () => fail! (at + " does not hold a signing key"),
             seed => if str.byte_length seed == 32 { seed } else { fail! (at + " does not hold a signing key") },
         },
@@ -1148,7 +1148,7 @@ let index_text! place = {
             Result.error(why) => { file.remove_all! scratch; fail! (place + ": " + why) },
             _ => (),
         }
-        let t = match file.read! scratch { () => "", t => t };
+        let t = match file.read! scratch { Option.none => "", Option.some(t) => t };
         strict! t
         file.remove_all! scratch
         t
@@ -1158,8 +1158,8 @@ let index_text! place = {
                                        ["--header", "Accept: application/vnd.github.raw"],
         [_, true] => fetched! (str.trim_suffix "/" place + "/" + index.file_name) [],
         _ => match file.read! (path.join place index.file_name) {
-            () => if io.is_dir! place { "" } else { fail! ("no index at " + place) },
-            t => t,
+            Option.none => if io.is_dir! place { "" } else { fail! ("no index at " + place) },
+            Option.some(t) => t,
         },
     }
 };
@@ -1174,8 +1174,8 @@ let read_index! m place = {
     }
     let memo = path.join (path.join (util.mind_home! ()) "index") (fetch.slug place);
     match file.read! memo {
-        () => (),
-        seen => match str.words seen {
+        Option.none => (),
+        Option.some(seen) => match str.words seen {
             [n, h] => match num.parse_int n {
                 () => (),
                 count => match index.extends s count h {
@@ -1224,7 +1224,7 @@ let submit! place entries title = {
 /// them fit; answers how many. What the shared index's Action runs.
 let append! dir entries = {
     let log_path = path.join dir index.file_name;
-    let before = match file.read! log_path { () => "", t => if str.is_empty t || str.ends_with "\n" t { t } else { t + "\n" } };
+    let before = match file.read! log_path { Option.none => "", Option.some(t) => if str.is_empty t || str.ends_with "\n" t { t } else { t + "\n" } };
     let after = list.fold (fn text e -> {
         let s = match index.verify text { Result.ok(s) => s, Result.error(why) => fail! (log_path + ": " + why) };
         let line = index.render (index.place s e);
@@ -1338,8 +1338,8 @@ let cmd_release! m c args = {
     if str.trim (git! root ["tag", "--list", tag]) != "" { fail! (tag + " is already a tag here; releases are never re-tagged") }
     let files = manifest.release_files m;
     list.each! (fn f -> match file.read! f {
-        () => fail! ("[release] files lists " + f + ", which is not there"),
-        text => match manifest.version_in text {
+        Option.none => fail! ("[release] files lists " + f + ", which is not there"),
+        Option.some(text) => match manifest.version_in text {
             () => fail! (f + " has no `let version = \"...\"` line for [release] files to move"),
             v => if v != current { fail! (f + " says " + v + " and mind.toml " + current + ": make them agree, then release") },
         },
@@ -1349,7 +1349,7 @@ let cmd_release! m c args = {
         // Each file read whole before it is written: an unforced read is made
         // after `file.write!` has truncated the file, and finds it empty.
         let rewrite! = fn f change -> {
-            let text = match file.read! f { () => fail! ("cannot read " + f), t => t };
+            let text = match file.read! f { Option.none => fail! ("cannot read " + f), Option.some(t) => t };
             let changed = change text;
             strict! changed
             file.write! f changed
@@ -1394,7 +1394,7 @@ let cmd_publish! m c args = {
     let public = crypto.ed25519_public seed;
     let [h, signed] = with_checkout! m "publishing" (fn dir -> {
         let h = fetch.tree_hash! dir;
-        let statements = match file.read! (path.join dir sign.file_name) { () => [], t => sign.statements t };
+        let statements = match file.read! (path.join dir sign.file_name) { Option.none => [], Option.some(t) => sign.statements t };
         let signed = list.any (fn st -> match st {
             sign.Statement.release(k, n, sh, _) => k == public && n == release && sh == h,
             _ => false,
@@ -1526,7 +1526,7 @@ let cmd_index! c args = {
             console.print! ("checkpointed " + place + " at " + stamp)
         },
         ["cosign", f] => {
-            let e = match entries_in (match file.read! f { () => fail! ("no entry at " + f), t => t }) {
+            let e = match entries_in (match file.read! f { Option.none => fail! ("no entry at " + f), Option.some(t) => t }) {
                 [e] => e,
                 _ => fail! (f + " should hold one entry"),
             };
@@ -1536,7 +1536,7 @@ let cmd_index! c args = {
             console.print! ("signed; it has " + to_string (list.length (index.Entry.sigs signed)) + " signature(s)")
         },
         ["submit", f] => {
-            let es = entries_in (match file.read! f { () => fail! ("no entry at " + f), t => t });
+            let es = entries_in (match file.read! f { Option.none => fail! ("no entry at " + f), Option.some(t) => t });
             if list.is_empty es { fail! (f + " holds no entry") }
             submit! (index_of! m c) es (index.Entry.kind (list.head es) + " " + str.join_str " " (index.Entry.fields (list.head es)))
         },
@@ -1545,7 +1545,7 @@ let cmd_index! c args = {
             // and checked. A checkpoint is not taken from outside, since it
             // would vouch for a head its signer never saw.
             let es = list.filter (fn e -> index.Entry.kind e != "checkpoint")
-                                 (entries_in (match file.read! f { () => "", t => t }));
+                                 (entries_in (match file.read! f { Option.none => "", Option.some(t) => t }));
             if list.is_empty es { fail! "the submission holds no entry" }
             let n = append! dir es;
             console.print! ("appended " + to_string n)
@@ -1627,7 +1627,7 @@ let cmd_reproduce! m o c args = {
         () => (),
         f => "sha256:" + crypto.hex (crypto.digest_file! :sha256 f),
     };
-    let statements_in! dir = match file.read! (path.join dir sign.file_name) { () => [], t => sign.statements t };
+    let statements_in! dir = match file.read! (path.join dir sign.file_name) { Option.none => [], Option.some(t) => sign.statements t };
     let results = match args {
         [] => with_checkout! m "reproducing" (fn dir -> {
             let rs = reproduce_in! dir o (sign.builds (statements_in! (manifest.root m))) compiler std vm file_hash;
@@ -1723,7 +1723,7 @@ let reproduce_in! dir o attested compiler std vm file_hash = {
 /// would happen after the write had already emptied the file.
 let add_statement! root s = {
     let at = path.join root sign.file_name;
-    let text = sign.with_statement (match file.read! at { () => "", t => t }) s;
+    let text = sign.with_statement (match file.read! at { Option.none => "", Option.some(t) => t }) s;
     strict! text
     file.write! at text
 };
@@ -1755,8 +1755,8 @@ let cmd_rotate! m c args = {
 let cmd_revoke! m c args = {
     let cert = match args { [f] => f, [] => signing_key_path! c + ".revoke", _ => fail! "revoke takes one certificate" };
     let found = match file.read! cert {
-        () => fail! ("no revocation certificate at " + cert),
-        text => list.filter (fn s -> match s { sign.Statement.revoke(_, _) => true, _ => false }) (sign.statements text),
+        Option.none => fail! ("no revocation certificate at " + cert),
+        Option.some(text) => list.filter (fn s -> match s { sign.Statement.revoke(_, _) => true, _ => false }) (sign.statements text),
     };
     match found {
         [s, .._] => {
@@ -1865,7 +1865,7 @@ let cmd_add! m c args = {
                 _ => add_name! source dir c,
             };
             let manifest_file = path.join (manifest.root m) "mind.toml";
-            let text = match file.read! manifest_file { () => "", t => t };
+            let text = match file.read! manifest_file { Option.none => "", Option.some(t) => t };
             file.write! manifest_file (manifest.with_dependency section key spec text)
             console.print! ("added " + key + " = " + manifest.dep_source [key, spec]
                             + " to [" + section + "]")
@@ -1886,7 +1886,7 @@ let cmd_remove! : :map -> [:string] -> :any;
 let cmd_remove! m names = {
     if list.is_empty names { fail! "remove needs the name of a dependency" }
     let manifest_file = path.join (manifest.root m) "mind.toml";
-    let text = match file.read! manifest_file { () => fail! ("cannot read " + manifest_file), t => t };
+    let text = match file.read! manifest_file { Option.none => fail! ("cannot read " + manifest_file), Option.some(t) => t };
     let step acc key = match acc {
         [t, missing] => match manifest.without_dependency "dependencies" key t {
             [t2, true] => [t2, missing],
@@ -2195,7 +2195,7 @@ let toolchain_sign! c release sums = {
     let out = path.join (path.dirname sums) "toolchain.sig";
     // Read whole before the write truncates it: a signature already there is
     // kept, the new one added beside it.
-    let before = match file.read! out { () => "", t => t };
+    let before = match file.read! out { Option.none => "", Option.some(t) => t };
     strict! before
     file.write! out (sign.with_statement before (sign.release seed release h))
     console.print! ("signed " + sums + " (" + h + ") as " + release + " by " + sign.spell (crypto.ed25519_public seed) + " into " + out)

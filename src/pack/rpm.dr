@@ -266,7 +266,7 @@ let build! sp lay c deps_tags dir dest = {
     io.close! h
     let cpio_size = out.size_of! payload;
     let? packed = compress.file! c payload;
-    let compressed = match file.read! packed { () => raise! ("cannot read back " + packed), data => data };
+    let compressed = match file.read! packed { Option.none => raise! ("cannot read back " + packed), Option.some(data) => data };
     let head = header 63 (package_tags sp lay c (io.digest! packed) + deps_tags + file_tags! lay listed);
     strict! head
     if cpio_size > too_big || str.byte_length compressed + str.byte_length head > too_big {

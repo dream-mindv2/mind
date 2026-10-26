@@ -320,8 +320,8 @@ let script! m =
         () => {
             let beside = path.join (root m) "build.dr";
             match file.read! beside {
-                () => (),
-                text => if declares_plan text { beside } else { () },
+                Option.none => (),
+                Option.some(text) => if declares_plan text { beside } else { () },
             }
         },
         s => path.join (root m) s,
@@ -524,8 +524,8 @@ let dep_source d =
 let load! dir = {
     let path = path.join dir "mind.toml";
     match file.read! path {
-        () => Result.error ("no manifest at " + path),
-        text => match toml.parse text {
+        Option.none => Result.error ("no manifest at " + path),
+        Option.some(text) => match toml.parse text {
             Result.ok(d) => {
                 let m = make dir d;
                 if is_package m || is_workspace m { ok m }
@@ -545,8 +545,8 @@ let load_dependency! dir =
     match io.exists! (path.join dir "mind.toml") {
         false => [:none],
         true => match file.read! (path.join dir "mind.toml") {
-            () => Result.error ("cannot read " + path.join dir "mind.toml"),
-            text => match toml.parse text {
+            Option.none => Result.error ("cannot read " + path.join dir "mind.toml"),
+            Option.some(text) => match toml.parse text {
                 Result.ok(d) => Result.ok (make dir d),
                 Result.error(why) => Result.error (path.join dir "mind.toml" + ": " + why),
                 _ => Result.error (path.join dir "mind.toml" + ": could not be read"),
@@ -558,7 +558,7 @@ let load_dependency! dir =
 /// anywhere inside a project -- the same way `git` finds its root.
 let rec find! dir =
     match file.read! (path.join dir "mind.toml") {
-        () => {
+        Option.none => {
             let parent = path.dirname dir;
             if parent == dir || dir == "." || dir == "/" { err "no mind.toml here or above" }
             else { find! parent }

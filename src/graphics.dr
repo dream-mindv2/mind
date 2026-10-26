@@ -132,9 +132,9 @@ let runtime! : :map -> App -> Result :string :string;
 let runtime! o app = {
     let holds! dir = dir != () && file.is_file! (path.join dir "dream-browser.wasm")
         && file.is_file! (path.join dir "dream-browser.mjs");
-    let installed = match install.holding! "browser/dream-browser.wasm" { () => (), d => path.join d "browser" };
+    let installed = match install.holding! "browser/dream-browser.wasm" { Option.none => (), Option.some(d) => path.join d "browser" };
     let checkout = above! (os.cwd! ()) "build-browser";
-    let named = [build.option o :runtime (), App.runtime app, path.from_env! "DREAM_BROWSER"];
+    let named = [build.option o :runtime (), App.runtime app, Option.or_unit (path.from_env! "DREAM_BROWSER")];
     match list.find (fn d -> d != ()) named {
         () => match (if holds! installed { installed } else if holds! checkout { checkout } else { () }) {
             () => Result.error ("no browser VM to ship: build one (`just graphics-browser` in the Dream repository), "
@@ -232,7 +232,7 @@ priv let assemble! m o app runtime web staging = {
     list.each! (fn n -> file.copy! (path.join runtime n) (path.join assets n)) ["dream-browser.mjs", "dream-browser.wasm"]
     list.each! (fn f -> file.copy! f (path.join assets (path.basename f))) (list.append (App.js app) (App.css app))
     list.each! (fn a -> ship! a (path.join assets (path.basename a))) (App.assets app)
-    let template = match file.read! (path.join web "index.html") { () => "", t => t };
+    let template = match file.read! (path.join web "index.html") { Option.none => "", Option.some(t) => t };
     file.write! (path.join assets "index.html") (page template app)
     // Whether the image's program is a backend to start, or the frontend
     // itself, which only the page runs.
