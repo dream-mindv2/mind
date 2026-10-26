@@ -56,7 +56,7 @@ import sign;
 import toolchain;
 import util;
 
-let version = "0.3.3";
+let version = "0.3.4";
 
 /// The options, described once. `cli` parses from this list and prints the
 /// help from the same list, so an option cannot be one without being the
