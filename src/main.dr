@@ -2193,7 +2193,11 @@ let toolchain_sign! c release sums = {
     let seed = signing_seed! c;
     let h = "sha256:" + io.digest! sums;
     let out = path.join (path.dirname sums) "toolchain.sig";
-    file.write! out (sign.with_statement (match file.read! out { () => "", t => t }) (sign.release seed release h))
+    // Read whole before the write truncates it: a signature already there is
+    // kept, the new one added beside it.
+    let before = match file.read! out { () => "", t => t };
+    strict! before
+    file.write! out (sign.with_statement before (sign.release seed release h))
     console.print! ("signed " + sums + " (" + h + ") as " + release + " by " + sign.spell (crypto.ed25519_public seed) + " into " + out)
 };
 
