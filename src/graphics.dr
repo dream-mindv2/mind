@@ -109,11 +109,11 @@ let problem! app = {
            list.find (fn n -> list.contains n reserved) names,
            list.find (fn n -> list.length (list.filter (fn o -> o == n) names) > 1) names,
            list.find (fn o -> not (regex.matches (regex.compile "(https?|wss?)://[A-Za-z0-9.-]+(:[0-9]+)?") o)) (App.connect app)] {
-        [f, _, _, _, _] if f != () => "[graphics]: no such file: " + f,
-        [_, a, _, _, _] if a != () => "[graphics]: no such asset: " + a,
-        [_, _, n, _, _] if n != () => "[graphics]: " + n + " would replace the page's own file of that name; rename it",
-        [_, _, _, n, _] if n != () => "[graphics]: two files are shipped as " + n,
-        [_, _, _, _, o] if o != () => "[graphics]: connect wants origins such as https://api.example.com, not " + o,
+        [Option.some(f), _, _, _, _] => "[graphics]: no such file: " + f,
+        [_, Option.some(a), _, _, _] => "[graphics]: no such asset: " + a,
+        [_, _, Option.some(n), _, _] => "[graphics]: " + n + " would replace the page's own file of that name; rename it",
+        [_, _, _, Option.some(n), _] => "[graphics]: two files are shipped as " + n,
+        [_, _, _, _, Option.some(o)] => "[graphics]: connect wants origins such as https://api.example.com, not " + o,
         _ => if regex.matches (regex.compile "\\./|/([A-Za-z0-9._~-]+/)*") (App.base app) { () }
              else { "[graphics]: base is ./ or an absolute path ending in /, such as /app/" },
     }
@@ -136,12 +136,12 @@ let runtime! o app = {
     let checkout = above! (os.cwd! ()) "build-browser";
     let named = [build.option o :runtime (), App.runtime app, Option.or_unit (path.from_env! "DREAM_BROWSER")];
     match list.find (fn d -> d != ()) named {
-        () => match (if holds! installed { installed } else if holds! checkout { checkout } else { () }) {
+        Option.none => match (if holds! installed { installed } else if holds! checkout { checkout } else { () }) {
             () => Result.error ("no browser VM to ship: build one (`just graphics-browser` in the Dream repository), "
                                 + "or name its directory with --runtime, [graphics] runtime or $DREAM_BROWSER"),
             d => Result.ok d,
         },
-        d => if holds! d { Result.ok d } else { Result.error (d + " holds no dream-browser.mjs and dream-browser.wasm") },
+        Option.some(d) => if holds! d { Result.ok d } else { Result.error (d + " holds no dream-browser.mjs and dream-browser.wasm") },
     }
 };
 

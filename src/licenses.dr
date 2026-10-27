@@ -158,7 +158,7 @@ let check own dep accepted = match [choices own, choices dep] {
             list.flat_map (fn o -> match fits o d { () => [], why => [why] }) own_ids
         }) alt;
         match list.find (fn alt -> reasons alt == []) deps {
-            () => list.head (reasons (list.head deps)),
+            Option.none => list.head (reasons (list.head deps)),
             _ => (),
         }
     },

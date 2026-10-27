@@ -136,7 +136,7 @@ let rec render_lines code_html lines seen = match lines {
 };
 let render_with code_html text = render_lines code_html (str.split "\n" (str.replace "\r\n" "\n" text)) (%{});
 let title fallback text = match list.find (fn l -> str.starts_with "# " l) (str.lines text) {
-    () => fallback, line => str.trim (tail 2 line),
+    Option.none => fallback, Option.some(line) => str.trim (tail 2 line),
 };
 
 let code_html language code = "<div class=\"code\">" + (if language == "" { "" } else { "<span class=\"lang\">" + escape language + "</span>" })

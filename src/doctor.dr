@@ -50,8 +50,8 @@ priv let version_lines! vm = {
 /// from a VM too old to list what it was built with.
 let feature : [:string] -> :string -> :string | :unit;
 let feature lines part = match list.find (fn l -> str.starts_with ("  " + part + " ") l) lines {
-    () => (),
-    l => str.trim (str.trim_prefix ("  " + part) l),
+    Option.none => (),
+    Option.some(l) => str.trim (str.trim_prefix ("  " + part) l),
 };
 
 /// A program by name: what runs, and what it hides.
@@ -187,7 +187,7 @@ priv let compiler_check! vm lines = {
     let dirs = install_dirs_of! vm lines;
     let chosen = match path.from_env! "DREAMS" { Option.none => build.default_compiler, Option.some(d) => d };
     let compiler = if str.contains_str "/" chosen { if io.exists! chosen { chosen } else { () } }
-                   else { match first_holding! dirs chosen { () => (), d => path.join d chosen } };
+                   else { match first_holding! dirs chosen { Option.none => (), Option.some(d) => path.join d chosen } };
     let std_dir = first_holding! dirs "std";
     [
         match compiler {
@@ -196,9 +196,9 @@ priv let compiler_check! vm lines = {
             c => ok "compiler" c,
         },
         match std_dir {
-            () => fail "std" ("no standard library in " + str.join_str ", " dirs)
+            Option.none => fail "std" ("no standard library in " + str.join_str ", " dirs)
                        "mind toolchain install",
-            d => ok "std" (path.join d "std"),
+            Option.some(d) => ok "std" (path.join d "std"),
         },
     ]
 };
@@ -238,8 +238,8 @@ priv let project_checks! m o = match m {
     m => {
         let missing = build.missing_system! (build.system_libs! m o);
         list.append (list.map (fn lib -> match list.find (fn [l, _] -> manifest.SystemLib.name l == manifest.SystemLib.name lib) missing {
-            () => ok ("needs " + manifest.SystemLib.name lib) "found",
-            [_, hint] => fail ("needs " + manifest.SystemLib.name lib)
+            Option.none => ok ("needs " + manifest.SystemLib.name lib) "found",
+            Option.some([_, hint]) => fail ("needs " + manifest.SystemLib.name lib)
                               (to_string (manifest.name m) + " needs it, and it is not found here") hint,
         }) (build.system_libs! m o)) (installed_check! m o)
     },

@@ -1033,7 +1033,7 @@ let install_hint! lib = {
     let or_file = ", or set $" + foreign_variable (manifest.SystemLib.name lib) + " to its file";
     match [here, map.pairs names] {
         [_, []] => "install the package that provides it" + or_file,
-        [[key, _, command], pairs] if names.[key else ()] != () => command + names.[key] + or_file,
+        [Option.some([key, _, command]), pairs] if names.[key else ()] != () => command + names.[key] + or_file,
         [_, pairs] => "install it: " + str.join_str ", " (list.map (fn [k, p] -> p + " (" + k + ")") pairs) + or_file,
     }
 };
@@ -1080,8 +1080,8 @@ let payload_args! m o g = {
             let all = list.unique (list.append (flat_map manifest.payloads manifests) (licenses_payload! m o manifests));
             let clash = list.find (fn [n, p] -> list.any (fn [n2, p2] -> n2 == n && p2 != p) all) all;
             match clash {
-                () => Result.ok (repeated "--payload" (map (fn [n, p] -> n + "=" + p) all)),
-                [n, _] => Result.error ("two packages carry a payload named `" + n + "`: "
+                Option.none => Result.ok (repeated "--payload" (map (fn [n, p] -> n + "=" + p) all)),
+                Option.some([n, _]) => Result.error ("two packages carry a payload named `" + n + "`: "
                                    + str.join_str " and " (map (fn e -> list.nth 1 e) (filter (fn e -> list.head e == n) all))),
             }
         },
