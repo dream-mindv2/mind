@@ -140,14 +140,14 @@ check "and --output is used as written" tgt 0 "  output   elsewhere.dream" info 
 
 # `[payload]`: files carried in the image, named, found by that name -- the
 # package's own and its dependencies' -- and the names that are refused.
-pl_code='import std.console;\nimport std.payload;\nimport note.lib;\nlet main! = console.print! (match payload.text "greeting" { () => "missing", t => t + " / " + lib.note () });\n'
+pl_code='import std.console;\nimport std.payload;\nimport note.lib;\nlet main! = console.print! (match payload.text "greeting" { Option.none => "missing", Option.some(t) => t + " / " + lib.note () });\n'
 pkg pl/app '[dependencies]\nnote = "../note"\n[payload]\ngreeting = "hello.txt"\n' "$pl_code"
 mv "$tmp/pl/app/lib.dr" "$tmp/pl/app/main.dr"
 printf 'hello' >"$tmp/pl/app/hello.txt"
-pkg pl/note '[payload]\nnote = "data/note.txt"\n' 'import std.payload;\nlet note u = match payload.text "note" { () => "missing", t => t };\n'
+pkg pl/note '[payload]\nnote = "data/note.txt"\n' 'import std.payload;\nlet note u = match payload.text "note" { Option.none => "missing", Option.some(t) => t };\n'
 mkdir -p "$tmp/pl/note/data" && printf 'from a dependency' >"$tmp/pl/note/data/note.txt"
 check "a [payload] file is carried and found by name, a dependency's too" pl 0 "hello / from a dependency" run
-pkg plpath/app '[payload]\n"docs/a.txt" = "x.txt"\n' 'import std.console;\nimport std.payload;\nlet main! = console.print! (match payload.text "docs/a.txt" { () => "missing", t => t });\n'
+pkg plpath/app '[payload]\n"docs/a.txt" = "x.txt"\n' 'import std.console;\nimport std.payload;\nlet main! = console.print! (match payload.text "docs/a.txt" { Option.none => "missing", Option.some(t) => t });\n'
 mv "$tmp/plpath/app/lib.dr" "$tmp/plpath/app/main.dr"
 printf 'by its path' >"$tmp/plpath/app/x.txt"
 check "a payload may be named by a path" plpath 0 "by its path" run

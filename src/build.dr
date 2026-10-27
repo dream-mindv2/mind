@@ -849,11 +849,10 @@ let rec every_node g =
 let downgrades before now =
     list.filter (fn e -> match lock.locked before e {
         () => false,
-        o => lock.Entry.source o == lock.Entry.source e && match [version.parse_or_unit (to_string (lock.Entry.version o)),
-                                                                   version.parse_or_unit (to_string (lock.Entry.version e))] {
-            [(), _] => false,
-            [_, ()] => false,
-            [was, is] => version.older is was,
+        o => lock.Entry.source o == lock.Entry.source e && match [version.parse (to_string (lock.Entry.version o)),
+                                                                   version.parse (to_string (lock.Entry.version e))] {
+            [Result.ok(was), Result.ok(is)] => version.older is was,
+            _ => false,
         },
     }) (lock.packages now);
 
@@ -963,9 +962,9 @@ let compiler_digest! m o =
             let r = os.exec_for! program (list.append lead ["--version"]) 60000;
             let out = r.[:out else ""];
             match str.split_once "(image " out {
-                () => Result.error ("the compiler does not say which image it is (`--version` printed `"
+                Option.none => Result.error ("the compiler does not say which image it is (`--version` printed `"
                                     + str.trim out + "`); attesting a build needs one that does"),
-                [_, rest] => Result.ok (str.trim (list.head (str.split ")" rest))),
+                Option.some([_, rest]) => Result.ok (str.trim (list.head (str.split ")" rest))),
             }
         },
     };

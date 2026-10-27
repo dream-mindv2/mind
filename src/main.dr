@@ -1118,7 +1118,7 @@ let indexes! m = {
 let github_of place =
     match str.starts_with "github:" place {
         false => (),
-        true => match str.split_once "/" (str.trim_prefix "github:" place) { () => (), parts => parts },
+        true => match str.split_once "/" (str.trim_prefix "github:" place) { Option.none => (), Option.some(parts) => parts },
     };
 
 /// How old an index's newest checkpoint may be, when this machine says rather
@@ -1251,7 +1251,7 @@ let entries_in text =
 let index_query! source =
     if manifest.is_remote source || manifest.is_tarball source || str.find "/" source >= 0 || io.is_dir! source { () }
     else {
-        let [name, req] = match str.split_once "@" source { () => [source, "*"], parts => parts };
+        let [name, req] = match str.split_once "@" source { Option.none => [source, "*"], Option.some(parts) => parts };
         if index.valid_name name { [name, req] } else { () }
     };
 

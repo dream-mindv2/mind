@@ -108,8 +108,8 @@ let sign_with seed e = {
 let parse_sigs : :string -> Option [[:string]];
 let parse_sigs text = {
     let one part = match str.split_once "=" part {
-        () => [],
-        [k, s] => match [sign.key_bytes k, crypto.unhex s] { [(), _] => [], [_, ()] => [], [kb, sb] => [[kb, sb]] },
+        Option.none => [],
+        Option.some([k, s]) => match [sign.key_bytes k, crypto.unhex s] { [(), _] => [], [_, ()] => [], [kb, sb] => [[kb, sb]] },
     };
     let parts = str.split "," text;
     let read = list.flat_map one parts;
@@ -338,11 +338,11 @@ let lookup s name requirement revoked =
                 [[r, .._], _] => Result.ok [r, list.contains (list.head r) (Name.yanked named)],
                 [_, Result.error(why)] => Result.error why,
                 [_, Result.ok(req)] => {
-                    let versioned = list.flat_map (fn r -> match version.parse_or_unit (list.head r) { () => [], v => [[v, r]] }) usable;
+                    let versioned = list.flat_map (fn r -> match version.parse (list.head r) { Result.ok(v) => [[v, r]], _ => [] }) usable;
                     match version.newest_matching req (list.map list.head versioned) {
-                        () => Result.error ("no release of " + name + " meets " + requirement + " (it has "
+                        Option.none => Result.error ("no release of " + name + " meets " + requirement + " (it has "
                                             + str.join_str ", " (list.map list.head usable) + ")"),
-                        best => Result.ok [list.nth 1 (list.head (list.filter (fn pair -> list.head pair == best) versioned)), false],
+                        Option.some(best) => Result.ok [list.nth 1 (list.head (list.filter (fn pair -> list.head pair == best) versioned)), false],
                     }
                 },
             }

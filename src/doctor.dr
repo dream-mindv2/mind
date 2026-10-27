@@ -89,8 +89,8 @@ priv let alias_pattern = regex.compile "^\\s*alias\\s+(dream|mind|dreams|lucid)(
 
 /// The aliases one file's text gives, as `[line number, name, what it runs]`.
 let aliases_in : :string -> [[:any]];
-let aliases_in text = list.flat_map (fn [n, line] -> match regex.groups (regex.find alias_pattern line) {
-    [name, target] if name != () => [[n, name, match target { () => "", t => str.trim t }]],
+let aliases_in text = list.flat_map (fn [n, line] -> match Option.map regex.groups (regex.find alias_pattern line) {
+    Option.some([Option.some(name), target]) => [[n, name, str.trim (Option.unwrap_or "" target)]],
     _ => [],
 }) (list.map_indexed (fn i l -> [i + 1, l]) (str.lines text));
 
