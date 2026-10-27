@@ -156,12 +156,12 @@ let build! c m = {
         fail! "output must be separate from the project root and guide directory"
     }
     let guide_files = files! guide_dir;
-    let timeout = num.parse_int (cli.get (to_string (toml.get 5000 cfg "docs" "example-timeout")) c "example-timeout");
-    if timeout == () || timeout <= 0 { fail! "example-timeout must be a positive number of milliseconds" }
+    let timeout = Option.unwrap_or 0 (num.parse_int (cli.get (to_string (toml.get 5000 cfg "docs" "example-timeout")) c "example-timeout"));
+    if timeout <= 0 { fail! "example-timeout must be a positive number of milliseconds" }
     let scratch = path.join root ("target/docs-examples/" + file.scratch_suffix! () + "-" + to_string (vm.wall_ms! ()));
     let jobs = match cli.get () c "jobs" {
         () => (vm.scheduler! ()).[:workers else 1],
-        n => match num.parse_int n { j if j != () && j > 0 => j, _ => fail! ("-j wants a number of jobs, not `" + n + "`") },
+        n => match num.parse_int n { Option.some(j) if j > 0 => j, _ => fail! ("-j wants a number of jobs, not `" + n + "`") },
     };
     let read_guides = map (guide! guide_dir) (filter (str.ends_with ".md") guide_files) |> strict!;
     let no_api = cli.flag_set c "no-api" || toml.get true cfg "docs" "api" == false;

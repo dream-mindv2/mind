@@ -115,7 +115,7 @@ let of_doc root doc overrides scripts = {
     let pick = fn key default -> match overrides.[key else ""] { "" => own doc key default, v => v };
     let? arch = platform.parse_arch (pick "arch" "native");
     let? os = platform.parse_os (pick "os" "native");
-    let release = match num.parse_int (pick "release" "1") { () => 0, n => n };
+    let release = match num.parse_int (pick "release" "1") { Option.none => 0, Option.some(n) => n };
     let summary = match text_of (toml.get () doc "ship" "summary") {
         "" => text_of (toml.get () doc "package" "description"),
         s => s,

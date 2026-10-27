@@ -1177,8 +1177,8 @@ let read_index! m place = {
         Option.none => (),
         Option.some(seen) => match str.words seen {
             [n, h] => match num.parse_int n {
-                () => (),
-                count => match index.extends s count h {
+                Option.none => (),
+                Option.some(count) => match index.extends s count h {
                     Result.error(why) => fail! ("the index at " + place + " is not the one this machine read before: " + why),
                     _ => (),
                 },
@@ -1480,7 +1480,7 @@ let cmd_index! c args = {
     let key! k = match sign.key_bytes k { () => fail! ("`" + k + "` is not a key"), _ => k };
     match args {
         ["init", dir] => {
-            let threshold = match num.parse_int (to_string (cli.get "1" c "threshold")) { () => fail! "--threshold is a number", n => n };
+            let threshold = match num.parse_int (to_string (cli.get "1" c "threshold")) { Option.none => fail! "--threshold is a number", Option.some(n) => n };
             let keepers = match cli.all c "keeper" { [] => [sign.spell (crypto.ed25519_public (seed! ()))], ks => list.map key! ks };
             let timekeeper = key! (to_string (cli.get (list.head keepers) c "timekeeper"));
             let age = to_string (cli.get "0" c "max-age");
@@ -1991,7 +1991,7 @@ let jobs_of! c =
     match cli.get () c "jobs" {
         () => (vm.scheduler! ()).[:workers else 1],
         n => match num.parse_int n {
-            j if j != () && j > 0 => j,
+            Option.some(j) if j > 0 => j,
             _ => fail! ("-j wants a number of jobs, not `" + n + "`"),
         },
     };

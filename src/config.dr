@@ -126,7 +126,7 @@ let check decl v = {
         [:bool, :bool] => ok v,
         [:bool, :string] => match v { "true" => ok true, "false" => ok false, _ => wrong },
         [:integer, :integer] => ok v,
-        [:integer, :string] => match num.parse_int v { () => wrong, n => ok n },
+        [:integer, :string] => match num.parse_int v { Option.none => wrong, Option.some(n) => ok n },
         [:string, :string] => ok v,
         [[:choice, cs], :string] => if list.contains v cs { ok v } else { wrong },
         _ => wrong,

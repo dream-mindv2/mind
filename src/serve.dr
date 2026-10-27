@@ -57,7 +57,7 @@ let loopback host = host == "localhost" || host == "127.0.0.1" || str.starts_wit
 let options! : :any -> server.Options;
 let options! c = {
     let port = match num.parse_int (cli.get "8000" c "port") {
-        p if p != () && p >= 0 && p <= 65535 => p,
+        Option.some(p) if p >= 0 && p <= 65535 => p,
         _ => fail! ("--port wants a number from 0 to 65535, not `" + cli.get "" c "port" + "`"),
     };
     server.defaults

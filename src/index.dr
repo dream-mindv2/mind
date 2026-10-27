@@ -205,10 +205,10 @@ let step s line = {
                 let listed = str.split "," keys;
                 let first = length s == 0;
                 match [num.parse_int epoch, num.parse_int threshold, time.parse_duration max_age] {
-                    [(), _, _] => Result.error "has no epoch",
-                    [_, (), _] => Result.error "has no threshold",
+                    [Option.none, _, _] => Result.error "has no epoch",
+                    [_, Option.none, _] => Result.error "has no threshold",
                     [_, _, Result.error(_)] => Result.error "has no maximum age",
-                    [ep, th, Result.ok(age)] => if ep != State.epoch s + 1 { Result.error "is not the next epoch" }
+                    [Option.some(ep), Option.some(th), Result.ok(age)] => if ep != State.epoch s + 1 { Result.error "is not the next epoch" }
                     else if th < 1 || th > list.length listed { Result.error "has a threshold its keepers cannot meet" }
                     else if list.any (fn k -> sign.key_bytes k == ()) (list.cons timekeeper listed) { Result.error "names something that is not a key" }
                     else {

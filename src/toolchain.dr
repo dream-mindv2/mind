@@ -121,7 +121,7 @@ let tarball_name v host = "dream-" + v + "-" + host + ".tar.gz";
 /// A version as numbers, for ordering: `0.10.0` after `0.9.2`. Anything
 /// that is not numbers sorts as text after them.
 let order_key : :string -> [:any];
-let order_key v = list.map (fn part -> match num.parse_int part { () => [1, part], n => [0, n] }) (str.split "." v);
+let order_key v = list.map (fn part -> match num.parse_int part { Option.none => [1, part], Option.some(n) => [0, n] }) (str.split "." v);
 
 /// Newest first.
 let newest_first : [:string] -> [:string];

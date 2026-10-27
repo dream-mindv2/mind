@@ -224,8 +224,8 @@ let epoch! modified = match os.env! "SOURCE_DATE_EPOCH" {
         ts => list.maximum ts / 1000000000,
     },
     text => match num.parse_int (str.trim text) {
-        () => raise! ("SOURCE_DATE_EPOCH is `" + text + "`, not a number of seconds"),
-        n => n,
+        Option.none => raise! ("SOURCE_DATE_EPOCH is `" + text + "`, not a number of seconds"),
+        Option.some(n) => n,
     },
 };
 
