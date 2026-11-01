@@ -75,6 +75,7 @@ let opts = [
     cli.flag "" "release" "the same as --profile release",
     cli.flag "" "no-license-check" "a release: build even if a dependency's licence does not allow this package's",
     cli.flag "" "debug" "define `debug`",
+    cli.flag "" "aot" "build a native executable that needs no VM (dreams/docs/aot.md)",
     cli.list_of "" "target" "PLATFORM" "where the image may run: linux, os=macos,arch=arm64, any",
     cli.list_of "f" "flag" "ARG" "pass this to the compiler as written",
 
@@ -2014,7 +2015,8 @@ let options_of! c =
                [:verbose,  cli.flag_set c "verbose"],
                [:jobs,     jobs_of! c],
                [:allow_downgrade, cli.flag_set c "allow-downgrade"],
-               [:license_check, not (cli.flag_set c "no-license-check")]];
+               [:license_check, not (cli.flag_set c "no-license-check")],
+               [:aot, cli.flag_set c "aot"]];
 
 let run_command! c theirs = {
     let o = options_of! c;

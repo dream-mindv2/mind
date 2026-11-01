@@ -1246,6 +1246,10 @@ let options = %{ :compiler => (), :defines => [], :includes => [], :hosts => [],
 let with_option k v o = o.[k => v];
 let option o k default = o.[k else default];
 
+/// Whether this build makes a native executable: `--aot`, or what the manifest says.
+let native : :map -> :any -> :bool;
+let native m o = option o :aot false == true || manifest.aot m (profile_of o);
+
 /// Where this build writes its image: `target/[<platforms>/]<profile>/`, as
 /// Cargo lays out its own. Two builds share a file only when they would write
 /// the same image. A target is in the path because an image carries where it
@@ -1264,7 +1268,8 @@ let output_of m o =
                     () => work_dir m o,
                     dir => path.join (work_dir m o) dir,
                 };
-                path.join (path.join under (profile_of o)) (manifest.name m + ".dream")
+                path.join (path.join under (profile_of o))
+                          (if native m o { manifest.name m } else { manifest.name m + ".dream" })
             },
             p  => path.join (manifest.root m) p,
         },
@@ -1559,6 +1564,7 @@ let compile_args! m o =
               manifest.compiler_flags m,
               manifest.profile_flags m (profile_of o),
               manifest.debug_info_flags m (profile_of o),
+              (if native m o { ["--aot"] } else { [] }),
               option o :extra [],
               option o :flags [],
             ]),
