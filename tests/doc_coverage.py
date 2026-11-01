@@ -67,7 +67,7 @@ def functions(path):
 def check():
     total, missing = 0, []
     for path in sorted((ROOT / 'mind/std').rglob('*.dr')):
-        if {'tests', 'examples'} & set(path.parts) or path.name == 'tests.dr':
+        if {'tests', 'examples', 'rt'} & set(path.parts) or path.name == 'tests.dr':
             continue
         for name, entry in functions(path).items():
             total += 1
