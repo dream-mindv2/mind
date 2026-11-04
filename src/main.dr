@@ -590,7 +590,7 @@ let cmd_goals! m o0 names = {
             console.error! why
             os.exit! 1
         },
-        Result.ok(made) => strict! (map (fn [name, path] -> console.print! (name + "  " + path)) made),
+        Result.ok(made) => strict! (map (fn! [name, path] -> console.print! (name + "  " + path)) made),
     }
 };
 
@@ -682,7 +682,7 @@ let seconds ms = to_string (ms / 1000) + "." + to_string (ms % 1000 / 100) + " s
 /// The packages `mind test` covers: the project, and its members when it is
 /// a workspace.
 let tested! : :map -> [:map];
-let tested! m = list.cons m (map (fn d -> match manifest.load! (path.join (manifest.root m) d) {
+let tested! m = list.cons m (map (fn! d -> match manifest.load! (path.join (manifest.root m) d) {
     Result.ok(pm) => pm,
     Result.error(why) => fail! ("workspace member `" + d + "`: " + why),
 }) (manifest.members m));
@@ -698,7 +698,7 @@ let cmd_test! m o0 asked = {
     };
     let wants_package pm = list.is_empty asked || list.any (fn a -> a == manifest.name pm
                                                                     || str.starts_with (manifest.name pm + ".") a) asked;
-    let tasks = flat_map (fn pm -> list.concat [
+    let tasks = flat_map (fn! pm -> list.concat [
         if manifest.is_package pm && picked asked (manifest.name pm + ".units") && io.exists! (manifest.test_entry! pm) {
             [[:units, pm, o]]
         } else { [] },
@@ -719,7 +719,7 @@ let cmd_test! m o0 asked = {
             if not (Report.passed one) { os.exit! 1 }
         },
         _ => {
-            strict! (map (fn r -> {
+            strict! (map (fn! r -> {
                 console.print! ((if Report.passed r { "ok   " } else { "FAIL " }) + Report.name r
                                 + "  (" + seconds (Report.ms r) + ")")
                 if not (Report.passed r) {
@@ -779,14 +779,14 @@ let cmd_options! m o = {
                     [n + " = " + toml.encode_value ((values.[key else (%{})]).[n else config.Decl.default d]),
                      config.summary d]) (list.sort_on (fn [n, _] -> n) pairs);
                 let width = fold (fn w [l, _] -> if str.byte_length l > w { str.byte_length l } else { w }) 0 lines;
-                map (fn [l, why] -> console.print! ("  " + l + str.repeat (width - str.byte_length l + 4) " " + why))
+                map (fn! [l, why] -> console.print! ("  " + l + str.repeat (width - str.byte_length l + 4) " " + why))
                          lines |> strict!
                 ()
             },
         }
     };
     show! build.root_key m
-    strict! (map (fn n -> match build.node_manifest n { () => (), dm => show! (build.node_key n) dm })
+    strict! (map (fn! n -> match build.node_manifest n { () => (), dm => show! (build.node_key n) dm })
                       (build.nodes g))
     if map.pairs values == [] { console.print! "no package in this build declares an option" }
     :ok
@@ -831,7 +831,7 @@ let cmd_deps! m o = {
     let show_build! pair = {
         let [owner, sub] = pair;
         let whose = if owner == build.root_key { "this project" } else { "`" + owner + "`" };
-        map (fn n -> {
+        map (fn! n -> {
             console.print! ("  " + describe n + "  [build: " + whose + "]")
             console.print! ("      -> " + to_string (build.node_abs n))
         }) (build.nodes sub) |> strict!
@@ -848,7 +848,7 @@ let cmd_tree! m o = {
     // A package's build dependencies hang under it, marked, in the graph of
     // their own they were walked into; what they use is shown from there.
     let rec branch! g key indent shown = {
-        let seen = fold (fn seen k -> {
+        let seen = fold (fn! seen k -> {
             let n = build.node g k;
             if list.contains k seen {
                 console.print! (indent + describe n + " (*)")
@@ -898,14 +898,14 @@ let cmd_update! m o names = {
     let chosen = list.unique (filter wanted every);
     let unknown = filter (fn k -> not (list.any (fn n -> build.node_key n == k) every)) names;
     if not (list.is_empty unknown) { fail! ("no dependency is called " + str.join_str ", " unknown) }
-    strict! (map (fn n -> match fetch.forget! (build.node_dep n) {
+    strict! (map (fn! n -> match fetch.forget! (build.node_dep n) {
         Result.error(why) => fail! why,
         _ => :ok,
     }) chosen)
     match build.resolve! m (build.with_option :dev true o) true { Result.error(why) => fail! why, _ => () }
     match chosen {
         [] => console.print! "nothing to update: every dependency is a directory",
-        _ => strict! (map (fn n -> console.print! ("updated " + describe n)) chosen),
+        _ => strict! (map (fn! n -> console.print! ("updated " + describe n)) chosen),
     }
     :ok
 };
@@ -933,7 +933,7 @@ let fetched g = {
 /// cache changed by hand gets past a build; it does not get past this.
 let cmd_verify! m o = {
     let ns = fetched (graph_of! m o);
-    let changed = list.filter (fn n -> fetch.tree_hash! (build.node_dir n)
+    let changed = list.filter (fn! n -> fetch.tree_hash! (build.node_dir n)
                                   != fetch.hash! (build.node_dep n) (build.node_dir n)) ns;
     let signed = list.length (list.filter (fn n -> build.node_signer n != ()) ns);
     match changed {
@@ -953,7 +953,7 @@ let cmd_mirror! m o args = {
     let into = match args { [d] => d, _ => fail! "mirror needs one directory to write into" };
     let g = graph_of! m o;
     file.mkdir_all! into
-    let wrote = list.map (fn n -> match fetch.archive! (fetch.hash! (build.node_dep n) (build.node_dir n))
+    let wrote = list.map (fn! n -> match fetch.archive! (fetch.hash! (build.node_dep n) (build.node_dir n))
                                                   (build.node_dir n) into {
         Result.error(why) => fail! (build.node_key n + ": " + why),
         Result.ok(w) => w,
@@ -1023,7 +1023,7 @@ let cmd_sign! m c args = {
     let root = manifest.root m;
     let seed = signing_seed! c;
     let release = release_of! m args "sign";
-    let h = with_checkout! m "signing" (fn dir -> fetch.tree_hash! dir);
+    let h = with_checkout! m "signing" (fn! dir -> fetch.tree_hash! dir);
     let public = crypto.ed25519_public seed;
     add_statement! root (sign.release seed release h)
     console.print! ("signed " + h + " as release " + release + " by " + sign.spell public)
@@ -1226,7 +1226,7 @@ let submit! place entries title = {
 let append! dir entries = {
     let log_path = path.join dir index.file_name;
     let before = match file.read! log_path { Option.none => "", Option.some(t) => if str.is_empty t || str.ends_with "\n" t { t } else { t + "\n" } };
-    let after = list.fold (fn text e -> {
+    let after = list.fold (fn! text e -> {
         let s = match index.verify text { Result.ok(s) => s, Result.error(why) => fail! (log_path + ": " + why) };
         let line = index.render (index.place s e);
         match index.verify (text + line + "\n") {
@@ -1338,7 +1338,7 @@ let cmd_release! m c args = {
     if pending != [] { fail! ("commit or stash what is changed first: " + str.join_str "; " (list.map str.trim pending)) }
     if str.trim (git! root ["tag", "--list", tag]) != "" { fail! (tag + " is already a tag here; releases are never re-tagged") }
     let files = manifest.release_files m;
-    list.each! (fn f -> match file.read! f {
+    list.each! (fn! f -> match file.read! f {
         Option.none => fail! ("[release] files lists " + f + ", which is not there"),
         Option.some(text) => match manifest.version_in text {
             () => fail! (f + " has no `let version = \"...\"` line for [release] files to move"),
@@ -1346,40 +1346,40 @@ let cmd_release! m c args = {
         },
     }) files
     console.print! ("releasing " + to_string (manifest.name m) + " " + current + " -> " + next)
-    step! dry ("set the version to " + next + " in mind.toml" + list.fold (fn acc f -> acc + ", " + path.basename f) "" files) (fn u -> {
+    step! dry ("set the version to " + next + " in mind.toml" + list.fold (fn acc f -> acc + ", " + path.basename f) "" files) (fn! u -> {
         // Each file read whole before it is written: an unforced read is made
         // after `file.write!` has truncated the file, and finds it empty.
-        let rewrite! = fn f change -> {
+        let rewrite! = fn! f change -> {
             let text = match file.read! f { Option.none => fail! ("cannot read " + f), Option.some(t) => t };
             let changed = change text;
             strict! changed
             file.write! f changed
         };
         rewrite! (path.join root "mind.toml") (manifest.with_version next)
-        list.each! (fn f -> rewrite! f (manifest.with_version_in current next)) files
+        list.each! (fn! f -> rewrite! f (manifest.with_version_in current next)) files
     })
-    list.each! (fn cmd -> step! dry ("run " + cmd) (fn u -> {
+    list.each! (fn! cmd -> step! dry ("run " + cmd) (fn! u -> {
         let r = os.exec_with! root [] "sh" ["-c", cmd] 0;
         if not (str.is_empty r.[:out else ""]) { console.write! r.[:out] }
         if r.[:code else 1] != 0 { fail! ("`" + cmd + "` failed: " + str.trim (r.[:err else ""])) }
     })) (manifest.release_run m)
     // The tree was clean when this began, so whatever is new was made by the
     // release -- a reseeded image, a file a `run` command wrote -- and is in it.
-    step! dry ("commit \"Release " + tag + "\"") (fn u -> {
+    step! dry ("commit \"Release " + tag + "\"") (fn! u -> {
         git! root ["add", "-A"]
         git! root ["commit", "-qm", "Release " + tag]
     })
     // Read again: what is signed and published is the manifest as it now is.
     let released = match manifest.load! root { Result.ok(r) => r, Result.error(why) => fail! why };
-    step! dry ("sign it as " + tag) (fn u -> cmd_sign! released c [tag])
-    step! dry ("commit " + sign.file_name + " and tag " + tag) (fn u -> {
+    step! dry ("sign it as " + tag) (fn! u -> cmd_sign! released c [tag])
+    step! dry ("commit " + sign.file_name + " and tag " + tag) (fn! u -> {
         git! root ["add", sign.file_name]
         git! root ["commit", "-qm", "Sign " + tag]
         git! root ["tag", "-a", tag, "-m", tag]
     })
-    step! dry ("push the branch and " + tag) (fn u -> git! root ["push", "-q", "origin", "HEAD", tag])
+    step! dry ("push the branch and " + tag) (fn! u -> git! root ["push", "-q", "origin", "HEAD", tag])
     if cli.flag_set c "no-publish" { console.print! ("not publishing: `mind publish " + tag + "` when you are ready") }
-    else { step! dry ("publish " + tag) (fn u -> cmd_publish! released c [tag]) }
+    else { step! dry ("publish " + tag) (fn! u -> cmd_publish! released c [tag]) }
 };
 
 let cmd_publish! m c args = {
@@ -1393,7 +1393,7 @@ let cmd_publish! m c args = {
     };
     let seed = signing_seed! c;
     let public = crypto.ed25519_public seed;
-    let [h, signed] = with_checkout! m "publishing" (fn dir -> {
+    let [h, signed] = with_checkout! m "publishing" (fn! dir -> {
         let h = fetch.tree_hash! dir;
         let statements = match file.read! (path.join dir sign.file_name) { Option.none => [], Option.some(t) => sign.statements t };
         let signed = list.any (fn st -> match st {
@@ -1427,9 +1427,9 @@ let cmd_search! m args = {
     let text = match args { [t] => t, [] => "", _ => fail! "search takes one piece of text" };
     let places = indexes! m;
     if list.is_empty places { fail! "no index is configured: MIND_INDEXES is none" }
-    strict! (list.map (fn place -> {
+    strict! (list.map (fn! place -> {
         let found = index.search (read_index! m place) text;
-        strict! (list.map (fn [n, r] -> console.print! (n + " " + r + "  (" + place + ")")) found)
+        strict! (list.map (fn! [n, r] -> console.print! (n + " " + r + "  (" + place + ")")) found)
     }) places)
 };
 
@@ -1439,7 +1439,7 @@ let cmd_search! m args = {
 let cmd_audit! m o = {
     let g = graph_of! m o;
     let ns = fetched g;
-    let states = list.map (fn place -> [place, read_index! m place]) (indexes! m);
+    let states = list.map (fn! place -> [place, read_index! m place]) (indexes! m);
     let revoked = (build.trust_context! m).[:revoked else []];
     let findings = list.flat_map (fn n -> {
         let [src, rel] = manifest.split_ref (manifest.dep_source (build.node_dep n));
@@ -1457,7 +1457,7 @@ let cmd_audit! m o = {
         [] => console.print! ("audited " + to_string (list.length ns) + " fetched packages against "
                               + to_string (list.length states) + " index(es): nothing to report"),
         _ => {
-            strict! (list.map (fn f -> console.print! ("  " + f)) findings)
+            strict! (list.map (fn! f -> console.print! ("  " + f)) findings)
             fail! (to_string (list.length findings) + " finding(s)")
         },
     }
@@ -1597,7 +1597,7 @@ let cmd_attest! m o c args = {
     let std = build.std_digest! ();
     let vm = build.vm_identity! ();
     let kept = build.output_of m o;
-    let [source, image] = with_checkout! m "attesting" (fn dir -> {
+    let [source, image] = with_checkout! m "attesting" (fn! dir -> {
         let source = fetch.tree_hash! dir;
         strict! source
         let [image, out] = build_reproducibly! dir o;
@@ -1630,7 +1630,7 @@ let cmd_reproduce! m o c args = {
     };
     let statements_in! dir = match file.read! (path.join dir sign.file_name) { Option.none => [], Option.some(t) => sign.statements t };
     let results = match args {
-        [] => with_checkout! m "reproducing" (fn dir -> {
+        [] => with_checkout! m "reproducing" (fn! dir -> {
             let rs = reproduce_in! dir o (sign.builds (statements_in! (manifest.root m))) compiler std vm file_hash;
             strict! (list.forced rs)
             rs
@@ -1644,7 +1644,7 @@ let cmd_reproduce! m o c args = {
             let trusted = list.cons (build.node_signer n) (build.node_roots n);
             let [mine, others] = list.partition (fn [k, _, _] -> list.contains (sign.spell k) trusted)
                                                 (sign.builds (statements_in! (build.node_dir n)));
-            strict! (list.map (fn [k, name, _] -> console.print! ("  ignored " + name + " by " + sign.spell k
+            strict! (list.map (fn! [k, name, _] -> console.print! ("  ignored " + name + " by " + sign.spell k
                                                                    + ": not a key this project trusts for " + key))
                               others)
             // A copy, since a build writes into the directory it builds, and
@@ -1788,7 +1788,7 @@ let add_spec! source c = {
     };
     match cli.all c "key" {
         [] => pinned,
-        keys => pinned.["keys" => strict! (list.map (fn k -> match sign.key_bytes k {
+        keys => pinned.["keys" => strict! (list.map (fn! k -> match sign.key_bytes k {
             () => fail! ("`" + k + "` is not a key: one is ed25519: and 64 hex digits"),
             bytes => sign.spell bytes,
         }) keys)],
@@ -1901,7 +1901,7 @@ let cmd_remove! m names = {
         [_, [_, .._] as missing] => fail! ("no dependency is called " + str.join_str ", " missing),
         [after, []] => {
             file.write! manifest_file after
-            strict! (map (fn k -> console.print! ("removed " + k)) names)
+            strict! (map (fn! k -> console.print! ("removed " + k)) names)
             :ok
         },
     }
@@ -2142,14 +2142,14 @@ let toolchain_list! c = {
     if cli.flag_set c "available" {
         match toolchain.channel! () {
             Result.error(why) => fail! why,
-            Result.ok(ch) => list.each! (fn v -> console.print! ("  " + v + (if list.contains v here { "  installed" } else { "" })
+            Result.ok(ch) => list.each! (fn! v -> console.print! ("  " + v + (if list.contains v here { "  installed" } else { "" })
                                                                  + (if v == toolchain.Channel.latest ch { "  latest" } else { "" }) + note v))
                                         (toolchain.Channel.versions ch),
         }
     } else if here == [] {
         console.print! "no toolchains are installed; `mind toolchain install` installs the latest"
     } else {
-        list.each! (fn v -> console.print! ("  " + v + note v)) here
+        list.each! (fn! v -> console.print! ("  " + v + note v)) here
     }
 };
 

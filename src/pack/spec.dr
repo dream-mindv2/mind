@@ -297,6 +297,6 @@ when test {
                               (vars (demo! ())).["file" => "demo-1.2.0-linux-x86_64.tar.gz"]) ),
         test.case "the prefix inside an archive"
             $( test.eq! ["usr", "", "opt/demo"]
-                        (list.map (fn p -> prefix_path (Spec.set_prefix p (demo! ()))) ["/usr", "/", "/opt/demo/"]) ),
+                        (list.map (fn! p -> prefix_path (Spec.set_prefix p (demo! ()))) ["/usr", "/", "/opt/demo/"]) ),
     ];
 }

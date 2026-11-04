@@ -66,7 +66,7 @@ let build! sp lay c dir dest = {
 let make! : Spec -> Layout -> :string -> :any -> Result :string :string;
 let make! sp lay dest wanted = {
     let? c = compress.pick! wanted [:gzip, :xz, :zstd];
-    scratch.within! dest "tarball" (fn dir -> build! sp lay c dir dest)
+    scratch.within! dest "tarball" (fn! dir -> build! sp lay c dir dest)
 };
 
 when test {

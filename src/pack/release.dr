@@ -42,8 +42,8 @@ let find! sp format dir = match url_template sp format {
             :all => [["any", "any"]],
             _ => platforms,
         };
-        let found = filter (fn [os, machine] -> io.exists! (dir + "/" + tarball.file_for sp os machine :gzip)) wanted;
-        let assets = map (fn [os, machine] -> {
+        let found = filter (fn! [os, machine] -> io.exists! (dir + "/" + tarball.file_for sp os machine :gzip)) wanted;
+        let assets = map (fn! [os, machine] -> {
             let name = tarball.file_for sp os machine :gzip;
             Asset.make os machine name (spec.fill template (spec.vars sp).["file" => name].["os" => os].["arch" => machine])
                        (io.digest! (dir + "/" + name))

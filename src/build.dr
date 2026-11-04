@@ -314,7 +314,7 @@ let edge_on! owner owner_key d g =
             Result.error(why) => Result.error (shown! (manifest.path owner) + ": `when = \"" + text + "\"` on `"
                                       + manifest.dep_name d + "`: " + why),
             Result.ok(cond) => {
-                let reads = fold (fn m n -> m.[n => option_read! owner g n]) (%{}) (config.names cond);
+                let reads = fold (fn! m n -> m.[n => option_read! owner g n]) (%{}) (config.names cond);
                 let option n = match reads.[n else ()] { () => (), r => Result.ok (list.nth 2 r) };
                 let kept = g.[:reads => list.append (g.[:reads else []])
                                                     (list.compact (map.values reads))];
@@ -475,7 +475,7 @@ let walk_graph! m o assumed = {
     let start = fold (fn g k -> match option o k () { () => g, v => g.[k => v] })
                      (empty_graph.[:assumed => assumed].[:settings => settings! m o])
                      trust_keys;
-    let walked = fold (fn acc wk -> match acc {
+    let walked = fold (fn! acc wk -> match acc {
         Result.error(why) => acc,
         Result.ok(g) => walk! m root_key (list.head wk) (list.nth 1 wk) path g,
     }) (ok start) (root_deps m (option o :dev false));
@@ -529,7 +529,7 @@ let rec settle_graph! m o assumed round =
 
 /// Settled values by package directory, which is how a walk reads them.
 let by_dir! m g values =
-    fold (fn acc [key, vs] -> {
+    fold (fn! acc [key, vs] -> {
         let abs = if key == root_key { path.absolute! (manifest.root m) }
                   else { node_abs (node g key) };
         acc.[abs => vs]
@@ -708,12 +708,12 @@ let script_section parent owner name =
 /// Every package the build resolved to, as lock entries.
 let rec lock_entries! g section name =
     list.concat [
-        map (fn n -> lock.Entry.make section (node_key n) (manifest.dep_source (node_dep n))
+        map (fn! n -> lock.Entry.make section (node_key n) (manifest.dep_source (node_dep n))
                                      (fetch.commit! (node_dep n) (node_dir n)) (node_version n)
                                      (fetch.hash! (node_dep n) (node_dir n)) (node_signer n) (node_roots n)
                                      (list.sort (list.map sign.spell (sign.Verdict.retired (node_verdict n)))))
                  (nodes g),
-        list.concat (map (fn pair -> {
+        list.concat (map (fn! pair -> {
             let [owner, sub] = pair;
             lock_entries! sub (script_section section owner name) name
         }) (map.pairs (g.[:builds else (%{})]))),
@@ -945,7 +945,7 @@ let remap_args! m o g =
         let name = match manifest.name m { "" => "root", n => n };
         let pairs = list.unique (list.concat [
             [[with_separator! (manifest.root m), name + "/"]],
-            map (fn n -> [with_separator! (node_abs n), node_key n + "/"]) (every_node g),
+            map (fn! n -> [with_separator! (node_abs n), node_key n + "/"]) (every_node g),
             [[with_separator! (stdlib_root! ()), ""]],
         ]);
         repeated "--remap-path-prefix"
@@ -1029,7 +1029,7 @@ let package_managers = [["brew", "brew", "brew install "], ["nix", "nix", "nix p
 let install_hint! : manifest.SystemLib -> :string;
 let install_hint! lib = {
     let names = manifest.SystemLib.packages lib;
-    let here = list.find (fn [key, program, _] -> Option.is_some (path.find_program! program)) package_managers;
+    let here = list.find (fn! [key, program, _] -> Option.is_some (path.find_program! program)) package_managers;
     let or_file = ", or set $" + foreign_variable (manifest.SystemLib.name lib) + " to its file";
     match [here, map.pairs names] {
         [_, []] => "install the package that provides it" + or_file,
@@ -1054,7 +1054,7 @@ let system_libs! m o = match search_paths! m o {
 
 /// The libraries of `libs` that cannot be found here, each with what to do.
 let missing_system! : [manifest.SystemLib] -> [[manifest.SystemLib, :string]];
-let missing_system! libs = list.flat_map (fn lib ->
+let missing_system! libs = list.flat_map (fn! lib ->
     match foreign.locate! (foreign.system_version (manifest.SystemLib.name lib) (manifest.SystemLib.version lib)) {
         Result.ok(_) => [],
         Result.error(_) => [[lib, install_hint! lib]],
@@ -1062,7 +1062,7 @@ let missing_system! libs = list.flat_map (fn lib ->
 
 /// Say which of the program's system libraries this machine lacks.
 let warn_system! : :map -> :map -> :unit;
-let warn_system! m o = list.each! (fn [lib, hint] ->
+let warn_system! m o = list.each! (fn! [lib, hint] ->
     console.error! ("warning: " + to_string (manifest.name m) + " needs the C library `" + manifest.SystemLib.name lib
                     + "`, which is not found here; " + hint)) (missing_system! (system_libs! m o));
 
@@ -1143,15 +1143,15 @@ let is_license_file name = {
 /// or packages that carry no licence.
 let licenses_payload! m o manifests =
     if profile_of o != "release" || not (manifest.embeds_licenses m (profile_of o)) { [] } else {
-        let found = flat_map (fn mm -> {
+        let found = flat_map (fn! mm -> {
             let root = manifest.root mm;
             map (fn f -> [manifest.name mm, f, path.join root f])
-                (list.sort (filter is_license_file (map path.basename (filter (fn p -> not (io.is_dir! p)) (file.list! root)))))
+                (list.sort (filter is_license_file (map path.basename (filter (fn! p -> not (io.is_dir! p)) (file.list! root)))))
         }) manifests;
         match found {
             [] => [],
             _ => {
-                let text = str.concat_all (map (fn [pkg, f, at] ->
+                let text = str.concat_all (map (fn! [pkg, f, at] ->
                     "==> " + pkg + ": " + f + " <==\n" + (match file.read! at { Option.none => "", Option.some(t) => t }) + "\n") found);
                 let out = path.join (target_dir m) (profile_of o + "/licenses.txt");
                 file.mkdir_all! (path.dirname out)
@@ -1397,7 +1397,7 @@ let scripted! m o g = {
                                                   }))],
     };
     list.concat (list.cons (one! (manifest.name m) m (manifest.root m))
-                           (map (fn n -> match node_manifest n {
+                           (map (fn! n -> match node_manifest n {
                                 () => one! (node_key n) (manifest.make (node_dir n) (%{})) (node_dir n),
                                 dm => one! (node_key n) dm (node_dir n),
                             }) (nodes g)))
@@ -1522,7 +1522,7 @@ let forget_units! dir = {
         _ => {
             file.mkdir_all! dir
             file.write! stamp ""
-            strict! (map (fn name -> forget_unit! (path.join dir name) now) (file.list! dir))
+            strict! (map (fn! name -> forget_unit! (path.join dir name) now) (file.list! dir))
             ()
         },
     }

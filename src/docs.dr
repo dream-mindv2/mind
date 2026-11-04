@@ -97,11 +97,11 @@ let package_modules! m = {
     let label = manifest.name m;
     if label == "" || markdown.slug label != label { fail! "package names used in docs must contain only lowercase letters, digits, hyphens and underscores" }
     let dir = manifest.src! m;
-    map (fn rel -> module! m label dir rel) (filter (str.ends_with ".dr") (files! dir)) |> strict!
+    map (fn! rel -> module! m label dir rel) (filter (str.ends_with ".dr") (files! dir)) |> strict!
 };
 let api_modules! m = {
     let own = if manifest.is_package m { package_modules! m } else { [] };
-    let children = flat_map (fn member -> match manifest.find! (path.join (manifest.root m) member) {
+    let children = flat_map (fn! member -> match manifest.find! (path.join (manifest.root m) member) {
         Result.ok(child) => package_modules! child,
         Result.error(why) => fail! why,
     }) (manifest.members m) |> strict!;
@@ -192,14 +192,14 @@ let build! c m = {
     // On a terminal, a bar naming the page being written; anywhere else, a
     // line per page, which is what says where a build stopped.
     let bar = progress.start! "pages" (list.length pages);
-    list.each! (fn [i, p] -> {
+    list.each! (fn! [i, p] -> {
         if progress.Bar.on bar { progress.show! bar i p.[:url] } else { console.error! ("writing " + p.[:url]) }
         let body = if str.starts_with "source/" p.[:url] { p.[:body] } else { links.linked names (local.[p.[:url] else []]) p.[:url] p.[:body] };
         write! out p.[:url] (theme.page_html site navigation p.[:body => body])
     }) (list.enumerate pages)
     progress.finish! bar
     // Copy local images and downloadable guide assets alongside their pages.
-    list.each! (fn rel -> {
+    list.each! (fn! rel -> {
         let to = path.join out ("guides/" + rel);
         file.mkdir_all! (file.parent to)
         file.copy! (path.join guide_dir rel) to
@@ -215,7 +215,7 @@ let build! c m = {
         let strict = cli.flag_set c "strict-examples" || toml.get false cfg "docs" "strict-examples" == true;
         console.error! ((if strict { "mind docs: " } else { "mind docs: warning: " }) + to_string (list.length unexpected)
             + " example(s) did not do what their fence says (mark one written to fail with ```dream fails):")
-        list.each! (fn u -> console.error! ("  " + u)) unexpected
+        list.each! (fn! u -> console.error! ("  " + u)) unexpected
         if strict { os.exit! 1 }
     }
 };
@@ -227,7 +227,7 @@ let stamp! c m = {
     let src = manifest.src! m;
     let under! dir = map (fn rel -> path.join dir rel) (files! dir);
     let paths = list.cons (path.join (manifest.root m) "mind.toml") (list.append (under! guide_dir) (under! src));
-    map (fn p -> [p, io.stat! p]) paths |> strict!
+    map (fn! p -> [p, io.stat! p]) paths |> strict!
 };
 
 /// Build again each time `stamp!` changes, looking once a second, for as long

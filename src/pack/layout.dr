@@ -185,7 +185,7 @@ let expand! sp s = {
         [_, _, :dir] => {
             let patterns = glob.always + Source.exclude s;
             let wanted = filter (fn rel -> not (glob.excluded patterns rel)) (file.walk! from);
-            all! (map (fn rel -> file_at! s (dest + "/" + rel) (from + "/" + rel)) wanted)
+            all! (map (fn! rel -> file_at! s (dest + "/" + rel) (from + "/" + rel)) wanted)
         },
         [_, _, :file] => {
             let? one = file_at! s dest from;
@@ -248,7 +248,7 @@ let sections sp name = spec.entries sp name + spec.entries sp (name + "." + plat
 let collect! : Spec -> Result Layout :string;
 let collect! sp = {
     let? sources = Result.all (map source_of (sections sp "ship.files"));
-    let? expanded = all! (map (fn s -> expand! sp s) sources);
+    let? expanded = all! (map (fn! s -> expand! sp s) sources);
     let? links = links_of sp;
     let found = list.concat expanded;
     let items = list.sort_on item.path (map (fn f -> list.head f) found + links);

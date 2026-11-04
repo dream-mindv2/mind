@@ -285,7 +285,7 @@ let from_mirrors! mirrors h commit = {
                         go! rest (list.cons (mirror + ": " + why) tried)
                     },
                     _ => {
-                        strict! (map (fn f -> file.remove_all! (path.join scratch f)) [marker, commit_file, hash_file])
+                        strict! (map (fn! f -> file.remove_all! (path.join scratch f)) [marker, commit_file, hash_file])
                         let got = tree_hash! scratch;
                         if got != h {
                             file.remove_all! scratch

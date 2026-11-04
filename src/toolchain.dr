@@ -132,7 +132,7 @@ let installed! : :unit -> [:string];
 let installed! () = {
     let root = path.join (home! ()) "toolchains";
     if not (io.is_dir! root) { [] } else {
-        newest_first (list.filter (fn v -> io.exists! (path.join (dir_of! v) "bin/dream")) (list.map path.basename (file.list! root)))
+        newest_first (list.filter (fn! v -> io.exists! (path.join (dir_of! v) "bin/dream")) (list.map path.basename (file.list! root)))
     }
 };
 

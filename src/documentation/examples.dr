@@ -121,8 +121,8 @@ let run_all! ctx jobs sources = {
     let distinct = list.unique_on (fn w -> list.nth 1 w) wanted;
     let bar = progress.start! "examples" (list.length distinct);
     progress.show! bar 0 ""
-    let answers = proc.map_reporting! jobs (fn k -> progress.show! bar k "")
-                                      (fn [_, code, _, m] -> run! ctx.[:manifest => m] code) distinct;
+    let answers = proc.map_reporting! jobs (fn! k -> progress.show! bar k "")
+                                      (fn! [_, code, _, m] -> run! ctx.[:manifest => m] code) distinct;
     progress.finish! bar
     let results = map.from_pairs (list.zip (map (fn w -> list.nth 1 w) distinct) answers);
     let unexpected = flat_map (fn [page, code, fails, _] -> match [list.nth 1 results.[code], fails] {

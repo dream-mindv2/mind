@@ -29,7 +29,7 @@ let write! : :string -> :integer -> [[:string, :string]] -> :unit;
 let write! path epoch members = {
     let h = io.open! path :write;
     out.write! h magic
-    list.each! (fn [name, source] -> {
+    list.each! (fn! [name, source] -> {
         let size = out.size_of! source;
         out.write! h (header name epoch 0o100644 size)
         out.copy_exactly! h source size

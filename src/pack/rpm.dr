@@ -143,7 +143,7 @@ let file_tags! lay listed = {
     let dirnames = list.unique (map (fn s -> list.head s) split);
     let dir_index = map.from_pairs (map (fn [n, d] -> [d, n]) (list.enumerate dirnames));
     let n = list.length items;
-    let digests = map (fn i -> match i { item.Item.file(_, _, source, _) => io.digest! source, _ => "" }) items;
+    let digests = map (fn! i -> match i { item.Item.file(_, _, source, _) => io.digest! source, _ => "" }) items;
     strict! digests
     [entry 1028 (Value.int32s (map (fn i -> match i { item.Item.dir(_, _) => 4096, _ => item.size i }) items)),
      entry 1030 (Value.int16s (map (fn i -> cpio.type_bits i + item.mode i % 4096) items)),
@@ -287,7 +287,7 @@ let make! : Spec -> Layout -> :string -> :any -> Result :string :string;
 let make! sp lay dest wanted = {
     let? c = compress.pick! wanted [:xz, :zstd, :gzip];
     let? deps_tags = relations sp c;
-    scratch.within! dest "rpm" (fn dir -> build! sp lay c deps_tags dir dest)
+    scratch.within! dest "rpm" (fn! dir -> build! sp lay c deps_tags dir dest)
 };
 
 when test {

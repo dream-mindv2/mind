@@ -122,7 +122,7 @@ let mtree_line! epoch i = {
 
 let mtree! : :integer -> [Item] -> :string;
 let mtree! epoch items = {
-    let lines = map (fn i -> mtree_line! epoch i) items;
+    let lines = map (fn! i -> mtree_line! epoch i) items;
     strict! lines
     "#mtree\n/set type=file uid=0 gid=0 mode=644\n" + str.concat_all lines
 };
@@ -170,7 +170,7 @@ let make! : Spec -> Layout -> :string -> :any -> Result :string :string;
 let make! sp lay dest wanted = {
     let? c = compress.pick! wanted [:zstd, :xz, :gzip, :none];
     let? info = pkginfo sp lay;
-    scratch.within! dest "arch" (fn dir -> build! sp lay c info dir dest)
+    scratch.within! dest "arch" (fn! dir -> build! sp lay c info dir dest)
 };
 
 when test {

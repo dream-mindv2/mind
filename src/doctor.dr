@@ -95,11 +95,11 @@ let aliases_in text = list.flat_map (fn [n, line] -> match Option.map regex.grou
 }) (list.map_indexed (fn i l -> [i + 1, l]) (str.lines text));
 
 priv let alias_checks! : :unit -> [Check];
-priv let alias_checks! () = list.flat_map (fn rc -> {
+priv let alias_checks! () = list.flat_map (fn! rc -> {
     let at = path.expand_home! rc;
     match try! { file.read! at } catch e { Option.none } {
         Option.none => [],
-        Option.some(text) => list.map (fn [n, name, target] -> {
+        Option.some(text) => list.map (fn! [n, name, target] -> {
             let where = at + ":" + to_string n;
             match name {
                 // `dream` and `mind` are programs; an alias for either hides
@@ -126,7 +126,7 @@ priv let mindv2_check! () = match os.env! "MINDV2_PATH" {
     () => [ok "MINDV2_PATH" "not set: the toolchain's own installation is used"],
     v => {
         let dirs = list.map path.expand_home! (str.split ":" v);
-        let missing = list.filter (fn d -> not (io.is_dir! d)) dirs;
+        let missing = list.filter (fn! d -> not (io.is_dir! d)) dirs;
         [warn "MINDV2_PATH" ("set to " + v + (if missing == [] { "" } else { "; not there: " + str.join_str ", " missing }))
               ("a toolchain needs no MINDV2_PATH, and this one is searched before it; unset it where it is set "
                + "(a shell file, NixOS environment.sessionVariables), then log out and in, since a desktop "
@@ -178,7 +178,7 @@ priv let install_dirs_of! vm lines = match feature lines "install" {
 };
 
 /// The first of `dirs` holding `entry`, or `()`.
-priv let first_holding! dirs entry = list.find (fn d -> io.exists! (path.join d entry)) dirs;
+priv let first_holding! dirs entry = list.find (fn! d -> io.exists! (path.join d entry)) dirs;
 
 /// What a build would compile with: the compiler image and the standard
 /// library beside it, found where the VM that runs the compiler looks.
@@ -284,7 +284,7 @@ priv let label s = match s { Status.ok => "ok  ", Status.warn => "warn", Status.
 let report! : :any -> :map -> :bool;
 let report! m o = {
     let all = checks! m o;
-    list.each! (fn c -> {
+    list.each! (fn! c -> {
         console.print! ("  " + label (Check.status c) + "  " + str.pad_end 22 " " (Check.name c + " ") + Check.found c)
         if Check.fix c != "" { console.print! ("        " + str.pad_end 22 " " "" + "-> " + Check.fix c) }
     }) all

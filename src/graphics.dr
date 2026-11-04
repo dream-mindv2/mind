@@ -104,8 +104,8 @@ let problem! app = {
     let files = list.concat [[App.frontend app], match App.backend app { () => [], b => [b] }, App.js app, App.css app];
     let shipped = list.concat [App.js app, App.css app, App.assets app];
     let names = list.map path.basename shipped;
-    match [list.find (fn f -> not (file.is_file! f)) files,
-           list.find (fn a -> not (io.exists! a)) (App.assets app),
+    match [list.find (fn! f -> not (file.is_file! f)) files,
+           list.find (fn! a -> not (io.exists! a)) (App.assets app),
            list.find (fn n -> list.contains n reserved) names,
            list.find (fn n -> list.length (list.filter (fn o -> o == n) names) > 1) names,
            list.find (fn o -> not (regex.matches (regex.compile "(https?|wss?)://[A-Za-z0-9.-]+(:[0-9]+)?") o)) (App.connect app)] {
@@ -228,10 +228,10 @@ priv let assemble! m o app runtime web staging = {
     let? _ = build.compile! m (o |> build.with_option :entry (App.frontend app)
                                  |> build.with_option :output (path.join assets "frontend.dream")
                                  |> build.with_option :targets ["any"]);
-    list.each! (fn n -> file.copy! (path.join web n) (path.join assets n)) ["main.mjs", "dom.mjs", "worker.mjs"]
-    list.each! (fn n -> file.copy! (path.join runtime n) (path.join assets n)) ["dream-browser.mjs", "dream-browser.wasm"]
-    list.each! (fn f -> file.copy! f (path.join assets (path.basename f))) (list.append (App.js app) (App.css app))
-    list.each! (fn a -> ship! a (path.join assets (path.basename a))) (App.assets app)
+    list.each! (fn! n -> file.copy! (path.join web n) (path.join assets n)) ["main.mjs", "dom.mjs", "worker.mjs"]
+    list.each! (fn! n -> file.copy! (path.join runtime n) (path.join assets n)) ["dream-browser.mjs", "dream-browser.wasm"]
+    list.each! (fn! f -> file.copy! f (path.join assets (path.basename f))) (list.append (App.js app) (App.css app))
+    list.each! (fn! a -> ship! a (path.join assets (path.basename a))) (App.assets app)
     let template = match file.read! (path.join web "index.html") { Option.none => "", Option.some(t) => t };
     file.write! (path.join assets "index.html") (page template app)
     // Whether the image's program is a backend to start, or the frontend
@@ -249,7 +249,7 @@ priv let assemble! m o app runtime web staging = {
 /// link to `~/.ssh` in `images/` would publish what it leads to. (The desktop
 /// host serves none either.)
 priv let ship! from to = if file.is_dir! from {
-    list.each! (fn rel -> {
+    list.each! (fn! rel -> {
         let source = path.join from rel;
         match io.lstat! source {
             [_, _, :link] => raise! ("[graphics]: " + source + " is a symbolic link; ship what it leads to instead"),

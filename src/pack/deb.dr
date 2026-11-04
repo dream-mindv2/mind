@@ -102,7 +102,7 @@ let data_items lay = {
 /// `md5sums`: the digest of each file, as debsums reads it.
 let md5sums! : Layout -> :string;
 let md5sums! lay = {
-    let lines = map (fn i -> match i {
+    let lines = map (fn! i -> match i {
         item.Item.file(path, _, source, _) => crypto.hex (crypto.digest_file! :md5 source) + "  " + path + "\n",
         _ => "",
     }) (Layout.items lay);
@@ -150,7 +150,7 @@ let make! sp lay out wanted = {
     let? _ = problems sp;
     let? c = compress.pick! wanted [:xz, :gzip, :zstd, :none];
     let? text = control sp lay;
-    scratch.within! out "deb" (fn dir -> build! sp lay text c dir out)
+    scratch.within! out "deb" (fn! dir -> build! sp lay text c dir out)
 };
 
 when test {
