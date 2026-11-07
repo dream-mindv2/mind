@@ -107,7 +107,8 @@ let command_spec = [
     cli.command "build" "compile the project; GOAL.. makes what its build script names instead"
         [cli.flag "" "precompile" "hand `--precompile` to the VM that runs the compiler",
          cli.value "" "runtime" "DIR" "a graphics application: the browser VM to ship (default: as [graphics] says)"],
-    cli.command "install" "build and install this package, DIR, Git URL, or github:USER/REPO for dream -x NAME" [],
+    cli.command "install" "build and install this package, DIR, Git URL, or github:USER/REPO for dream -x NAME"
+        [cli.flag "" "image" "install the image the VM runs, not a native executable"],
     cli.command "run"   "compile, then run it with the arguments given; FILE.dr runs that file alone"
         [cli.flag "" "desktop" "a graphics application: open it in a window rather than serve it",
          cli.value "" "port" "PORT" "a graphics application: the port to serve it on (default: 8000)",
@@ -488,8 +489,16 @@ let install_source source =
     };
 
 /// Install a successful build by rename, so a running or previously installed
-/// image is never truncated. A bare image wins over `.dream` in the VM's
+/// program is never truncated. A bare name wins over `.dream` in the VM's
 /// lookup, so an existing bare installation is replaced at that spelling.
+///
+/// A program is installed native where it can be: an executable needs no VM to
+/// start and runs as compiled code, and the VM runs one it finds where an image
+/// would be (`is_native_program` in dream/src/cli.cpp), so `dream -x NAME` means
+/// the same program either way. Where the native build cannot be made -- a
+/// native the AOT runtime does not have, a VM without LLVM -- the image is
+/// installed and the reason said in a line. A graphics application is an image,
+/// since its backend runs the image again, and `--image` asks for one.
 let install_package! : :map -> :map -> (:string | :unit) -> Result :string :string;
 let install_package! m o given = {
     let name = match given { () => manifest.name m, n => n };
@@ -500,28 +509,85 @@ let install_package! m o given = {
             Option.none => Result.error "no Dream installation directory is available; set MINDV2_PATH or HOME",
             Option.some(dir) => {
                 let bare = path.join dir name;
-                let dest = if file.is_file! bare { bare } else { bare + ".dream" };
-                let output = build.output_of m o;
-                if path.same_file! output dest { Result.error "the build output must differ from the installed image" }
-                else if file.is_dir! dest { Result.error ("the installation destination is a directory: " + dest) }
-                else {
-                    let? _ = if graphics.is_app m { graphics.build! m o } else { build.compile! m o };
-                    build.warn_system! m o
-                    file.mkdir_all! dir
-                    let scratch = file.temp_file_in! dir ".mind-install-";
-                    let result = try! {
-                        file.copy! output scratch
-                        io.rename! scratch dest
+                let wants_native = not (graphics.is_app m) && o.[:image else false] != true;
+                let native_built = if not wants_native { Result.error "" } else { build_native! m o };
+                match native_built {
+                    Result.ok(output) => {
+                        let? dest = installed_as! output bare;
+                        // The image an earlier install left would be found second; it is not this program.
+                        if file.is_file! (bare + ".dream") { file.remove_all! (bare + ".dream"); };
                         Result.ok dest
-                    } catch e { Result.error (error.describe e) };
-                    strict! result
-                    file.remove_all! scratch
-                    result
+                    },
+                    Result.error(why) => {
+                        if why != "" { console.error! ("not native (" + why + "); installing the image") };
+                        let o2 = o.[:aot => false];
+                        // A bare file that is an image is replaced where it is, since the VM finds it
+                        // first; a native program there gives way to the image beside it.
+                        let dest = if is_image_file! bare { bare } else { bare + ".dream" };
+                        let output = build.output_of m o2;
+                        if path.same_file! output dest { Result.error "the build output must differ from the installed image" }
+                        else {
+                            let? _ = if graphics.is_app m { graphics.build! m o2 } else { build.compile! m o2 };
+                            build.warn_system! m o2
+                            let? at = installed_as! output dest;
+                            // A native program left at the bare name would be found first.
+                            if dest != bare && file.is_file! bare { file.remove_all! bare; };
+                            Result.ok at
+                        }
+                    },
                 }
             },
         }
     }
 };
+
+/// Whether `p` is a Dream image: its first bytes are an image's magic
+/// (dream/docs/bytecode-format.md).
+let is_image_file! : :string -> :bool;
+let is_image_file! p = file.is_file! p && file.head! p 8 == Option.some "DAGNCAAF";
+
+/// The native build, answering where it wrote the executable, or the first line
+/// of why it could not be made.
+let build_native! : :map -> :map -> Result :string :string;
+let build_native! m o = {
+    let o2 = o.[:aot => true];
+    match try! { build.compile! m o2 } catch e { Result.error (error.describe e) } {
+        Result.ok(_) => {
+            build.warn_system! m o2
+            Result.ok (build.output_of m o2)
+        },
+        Result.error(why) => Result.error (first_line why),
+    }
+};
+
+let first_line : :string -> :string;
+let first_line text = match list.filter (fn l -> str.trim l != "") (str.split "\n" text) {
+    [] => "the native build failed",
+    [l, ..] => str.trim l,
+};
+
+/// `output` copied to `dest` through a file beside it and a rename.
+let installed_as! : :string -> :string -> Result :string :string;
+let installed_as! output dest =
+    if file.is_dir! dest { Result.error ("the installation destination is a directory: " + dest) }
+    else if path.same_file! output dest { Result.error "the build output must differ from the installed program" }
+    else {
+        let dir = path.dirname dest;
+        file.mkdir_all! dir
+        let scratch = file.temp_file_in! dir ".mind-install-";
+        let result = try! {
+            file.copy! output scratch
+            Result.ok dest
+        } catch e { Result.error (error.describe e) };
+        strict! result
+        let moved = match result {
+            Result.ok(_) => try! { io.chmod! scratch 0o755; io.rename! scratch dest; result } catch e { Result.error (error.describe e) },
+            _ => result,
+        };
+        strict! moved
+        file.remove_all! scratch
+        moved
+    };
 
 /// Every explicit source builds into a fresh temporary directory. Local
 /// source paths stay in place so relative dependencies still resolve; Git
@@ -554,8 +620,9 @@ let install_from! source spec o given = {
 };
 
 let cmd_install! : :map -> :map -> [:string] -> :unit;
-let cmd_install! o c args = {
+let cmd_install! o0 c args = {
     let given = cli.get () c "name";
+    let o = o0.[:image => cli.flag_set c "image"];
     let result = try! {
         match args {
             [] => install_package! (project! ()) o given,

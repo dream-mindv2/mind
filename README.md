@@ -213,7 +213,7 @@ Given twice, the second is relative to the first.
 | `mind init [NAME]` | make this directory a project, named after it unless NAME is given; a `main.dr` or `src/` already there is kept |
 | `mind build` | compile to `target/<profile>/<name>.dream`; an application, to `target/<profile>/<name>/` ([Applications](#applications)) |
 | `mind build GOAL..` | make what the build script names instead ([Goals](#goals)) |
-| `mind install [SOURCE]` | build and install the current package, a directory, Git URL, or `github:USER/REPO` for `dream -x NAME` |
+| `mind install [SOURCE]` | build and install the current package, a directory, Git URL, or `github:USER/REPO` for `dream -x NAME`: native where it can be, `--image` for the image |
 | `mind run [-- args]` | compile, then run with the arguments given; an application is served on 127.0.0.1, or opened in a window with `--desktop` |
 | `mind run FILE.dr [args]` | compile and run one file on its own, with the standard library and the modules beside it; no project needed |
 | `mind test [NAME..]` | run every test at once: each package's units and its build script's checks |
@@ -253,10 +253,17 @@ compiler's: it hands `--precompile` to the VM that runs `dreams`, so every
 function the JIT can take is compiled before the build starts.
 
 `mind install` builds the current package with the usual build settings and
-installs `<name>.dream` in `path.dream_dir! ()`, the first directory used by
-`dream -x` (`MINDV2_PATH`, the VM's packaged installation, or `~/.mindv2`).
-Use `--release` or `--profile NAME` to choose a different profile, and
-`--name NAME` to choose the installed program's name:
+installs it in `path.dream_dir! ()`, the first directory used by `dream -x`
+(`MINDV2_PATH`, the VM's packaged installation, or `~/.mindv2`). It is built
+**native** where it can be -- an executable called `<name>`, compiled code that
+needs no VM to start -- and the VM runs an executable it finds where an image
+would be, so `dream -x NAME` and `dream NAME` mean the program either way.
+Where the native build cannot be made (a runtime function native code does not
+have yet, a VM built without LLVM) the image `<name>.dream` is installed
+instead, and one line says why. A graphics application is always an image, and
+`--image` asks for one. Installing one removes the other, so the name never
+means two programs. Use `--release` or `--profile NAME` to choose a different
+profile, and `--name NAME` to choose the installed program's name:
 
 ```sh
 mind install

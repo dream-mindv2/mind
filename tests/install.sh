@@ -36,8 +36,17 @@ image() {
 printf '[package]\nname = "current"\nlicense = "MIT"\n' >"$tmp/work/current/mind.toml"
 printf 'import std.console;\nlet main! = console.print! "current";\n' >"$tmp/work/current/main.dr"
 run "$tmp/work/current" install
-check 0 'bare install builds and installs the current package'
+check 0 'bare install builds and installs the current package, native'
+test -x "$tmp/work/current/target/debug/current"
+test -x "$MINDV2_PATH/current"
+test ! -e "$MINDV2_PATH/current.dream"
+image current current
+
+run "$tmp/work/current" install --image
+check 0 '--image installs the image, and the native program it replaces is gone'
 test -f "$tmp/work/current/target/debug/current.dream"
+test -f "$MINDV2_PATH/current.dream"
+test ! -e "$MINDV2_PATH/current"
 image current current
 
 printf '[package]\nname = "helper"\nlicense = "MIT"\n' >"$tmp/work/helper/mind.toml"
@@ -73,11 +82,11 @@ test ! -s "$tmp/work/addon/mind.lock"
 test ! -e "$tmp/work/helper/target"
 test ! -e "$tmp/work/helper/mind.lock"
 
-before=$(cksum "$MINDV2_PATH/addon-tool.dream")
+before=$(cksum "$MINDV2_PATH/addon-tool")
 printf 'let main! = ;\n' >"$tmp/work/addon/main.dr"
 run "$tmp/outside" install ../work/addon --name addon-tool
 check 1 'a failed directory build preserves the installed image and cleans temporary files'
-test "$(cksum "$MINDV2_PATH/addon-tool.dream")" = "$before"
+test "$(cksum "$MINDV2_PATH/addon-tool")" = "$before"
 image addon-tool 'helper generated release'
 
 repo="$tmp/repos/app.git"
@@ -117,9 +126,20 @@ test ! -e "$repo/mind.lock"
 
 cp "$MINDV2_PATH/current.dream" "$MINDV2_PATH/current"
 printf 'import std.console;\nlet main! = console.print! "upgraded";\n' >"$tmp/work/current/main.dr"
-run "$tmp/work/current" install
+run "$tmp/work/current" install --image
 check 0 'reinstall replaces a bare image that would otherwise shadow the .dream file'
 image current upgraded
+run "$tmp/work/current" install
+check 0 'a native install replaces the image'
+test ! -e "$MINDV2_PATH/current.dream"
+image current upgraded
+
+printf 'import std.console;\nimport std.vm;\nlet main! = { console.print! (to_string (Result.is_ok (vm.open_image! "none.dream"))) };\n' >"$tmp/work/current/main.dr"
+run "$tmp/work/current" install
+check 0 'what cannot be built native is installed as the image, and says why'
+case "$out" in *"not native"*) ;; *) printf 'FAIL no reason given: %s\n' "$out"; exit 1 ;; esac
+test -f "$MINDV2_PATH/current.dream"
+test ! -e "$MINDV2_PATH/current"
 
 run "$tmp/outside" install github:fixture
 check 1 'malformed GitHub shorthand is reported'
