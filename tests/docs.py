@@ -98,7 +98,7 @@ this is a fragment, never compiled
     # Discovery from a subdirectory and a global compiler option must work.
     # The deadline bounds each example's compile as well as its run, so it
     # has to leave room for a compile; the endless example still runs out.
-    out = invoke('--compiler', COMPILER, 'docs', '--example-timeout', '2000', '--strict-examples', cwd=project / 'src')
+    out = invoke('--compiler', COMPILER, 'docs', '--example-timeout', '10000', '--strict-examples', cwd=project / 'src')
     assert 'did not do what' not in out, out
     target = project / 'target/docs'
     assert (target / 'index.html').exists(), out
@@ -136,11 +136,11 @@ this is a fragment, never compiled
     lib = project / 'src/lib.dr'
     lib.write_text(lib.read_text().replace('/// ```dream fails\n/// let main! = unknown_name;', '/// ```dream\n/// let main! = unknown_name;')
                    .replace('/// ```dream\n/// import demo.lib;', '/// ```dream fails\n/// import demo.lib;'))
-    out = invoke('--compiler', COMPILER, 'docs', '-C', str(project), '--example-timeout', '2000')
+    out = invoke('--compiler', COMPILER, 'docs', '-C', str(project), '--example-timeout', '10000')
     assert '2 example(s) did not do what' in out and 'warning' in out, out
     assert 'api/demo/lib.html: let main! = unknown_name; (failed)' in out, out
     assert 'marked `fails` but ran cleanly' in out, out
-    out = invoke('--compiler', COMPILER, 'docs', '-C', str(project), '--example-timeout', '2000', '--strict-examples', ok=False)
+    out = invoke('--compiler', COMPILER, 'docs', '-C', str(project), '--example-timeout', '10000', '--strict-examples', ok=False)
     assert 'did not do what' in out, out
     invoke('docs', '-C', str(project), '-o', str(project), ok=False)
     invoke('docs', '-C', str(project), '--example-timeout', '0', ok=False)

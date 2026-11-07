@@ -204,16 +204,27 @@ priv let write_driver! dir group = {
                 ]))
 };
 
+/// An empty directory beside a group's driver, standing in for each script's package (`driver_roots`).
+priv let blank_dir! : :string -> :string;
+priv let blank_dir! dir = {
+    let blank = path.join dir "blank";
+    file.mkdir_all! blank
+    blank
+};
+
 /// A file written whole or not at all (`std.file`'s): two runs of one group
 /// at once each write the same bytes, and neither must ever read the other's
 /// half-written file.
 priv let replace! : :string -> :string -> :unit;
 priv let replace! path text = file.replace! path text;
 
-/// The `-L` roots a group's driver is compiled with.
-priv let driver_roots : [:map] -> [:string];
-priv let driver_roots group =
-    list.concat [flat_map (fn [i, s] -> ["-L", "mind_script_" + to_string i + "=" + Scripted.root s,
+/// The `-L` roots a group's driver is compiled with. Each script is a module of a package of its
+/// own, an empty directory (`blank`), overlaid with the package's root, where the script and
+/// what is beside it are: with the package's root as the package, `build` was its `src/build.dr`
+/// when it had one -- `mind`'s own -- and the script was never compiled.
+priv let driver_roots : :string -> [:map] -> [:string];
+priv let driver_roots blank group =
+    list.concat [flat_map (fn [i, s] -> ["-L", "mind_script_" + to_string i + "=" + blank,
                                               "-L", "mind_script_" + to_string i + "+=" + Scripted.root s])
                                (list.enumerate group),
                  flat_map (fn p -> ["-L", p]) (Scripted.paths (list.head group))];
@@ -247,7 +258,7 @@ priv let compile_driver! setting dir group = {
     // Compiled beside the image and renamed into place, for the reason
     // `replace!` gives: a run that finds the image there must find a whole one.
     let scratch = path.join dir ("script.dream.tmp-" + file.scratch_suffix! ());
-    let [program, args] = compiler_args setting (list.concat [[path.join dir "driver/main.dr"], driver_roots group,
+    let [program, args] = compiler_args setting (list.concat [[path.join dir "driver/main.dr"], driver_roots (blank_dir! dir) group,
                                                               ["-o", scratch]]);
     if Setting.verbose setting { console.error! (str.join_str " " (list.cons program args)) }
     let r = os.exec_with! (os.cwd! ()) (progress.child_env! ()) program args 0;
