@@ -250,15 +250,18 @@ let warnings sp = list.concat [
 when test {
     import std.test;
 
+    let manifest : :string;
     let manifest = "[package]\nname = \"demo\"\nversion = \"1.2.0\"\ndescription = \"a demo\"\n\n"
                    + "[ship]\nrelease = 3\narch = \"amd64\"\nlicense = \"MIT\"\n\n"
                    + "[ship.files]\n\"bin/demo\" = \"demo\"\n\n[ship.deb]\ndepends = [\"libc6\"]\n";
 
+    let demo! : :unit -> :any;
     let demo! () = match toml.parse manifest {
         Result.ok(doc) => match of_doc "." doc (%{}) (%{}) { Result.ok(sp) => sp, other => raise! other },
         other => raise! other,
     };
 
+    let tests : [:any];
     let tests = [
         test.case "the name and version come from [package]"
             $( {

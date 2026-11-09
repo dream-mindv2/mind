@@ -6,6 +6,7 @@ import documentation.examples;
 
 // Lexical state: delimiter depth, quote, block-comment depth. It keeps example
 // declarations inside strings, comments and function bodies out of the API.
+let advance : :string -> :integer -> [:any] -> [:any];
 let rec advance line i state = {
     if i >= len line { state }
     else {
@@ -38,6 +39,7 @@ let rec advance line i state = {
         }
     }
 };
+let declaration : :string -> :any;
 let declaration line = {
     let s = str.trim line;
     let prefix = if str.starts_with "let rec " s { 8 } else if str.starts_with "let " s { 4 }
@@ -53,6 +55,7 @@ let declaration line = {
     }
 };
 // Each entry carries its name, written signature, prose and source line.
+let scan : [:string] -> :integer -> [:any] -> [:string] -> [:map] -> [:map];
 let rec scan lines number state comments entries = match lines {
     [] => list.reverse entries,
     [line, ..rest] => {
@@ -73,15 +76,19 @@ let rec scan lines number state comments entries = match lines {
         }
     },
 };
+let extract : :string -> [:map];
 let extract text = scan (str.split "\n" text) 1 [0, "", 0] [] [];
+let render : :map -> :string -> [:map] -> :string;
 let render ctx source entries = str.join_str "" (map (fn e ->
     "<section class=\"symbol\"><div class=\"symbol-head\"><h2 id=\"" + markdown.escape e.[:name] + "\"><a class=\"anchor\" href=\"#" + markdown.escape e.[:name] + "\">"
     + markdown.escape e.[:name] + "</a></h2><a class=\"source\" href=\"" + markdown.escape source + "#L" + to_string e.[:line] + "\">source · line " + to_string e.[:line] + "</a></div>"
     + "<pre class=\"signature\"><code class=\"language-dream\">" + markdown.escape e.[:signature] + "</code></pre>"
     + "<div class=\"symbol-doc\">" + examples.render ctx e.[:doc] + "</div></section>") entries);
+let source_html : :string -> :string;
 let source_html text = "<pre class=\"source-code\"><code>" + str.join_str "" (map (fn [i, line] ->
     "<span class=\"line\" id=\"L" + to_string (i + 1) + "\"><a class=\"ln\" href=\"#L" + to_string (i + 1) + "\">" + to_string (i + 1) + "</a><span class=\"lc\">" + markdown.escape line + "</span>\n</span>") (list.enumerate (str.split "\n" text))) + "</code></pre>";
 
+let comment_text : :string -> :string;
 let comment_text line = {
     let text = markdown.tail 3 line;
     if str.starts_with " " text { markdown.tail 1 text } else { text }

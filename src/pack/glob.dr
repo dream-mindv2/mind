@@ -63,6 +63,7 @@ let always : [:string] = [".git", ".hg", ".svn", ".DS_Store"];
 when test {
     import std.test;
 
+    let tests : [:any];
     let tests = [
         test.case "a bare pattern matches a name at any depth"
             $( test.eq! [true, true, false] [matches "*.o" "a.o", matches "*.o" "x/y/a.o", matches "*.o" "a.c"] ),

@@ -36,6 +36,7 @@ let make! dir = match published! dir {
 when test {
     import std.test;
 
+    let tests : [:any];
     let tests = [
         test.case "a line sha256sum reads"
             $( test.eq! "abc  hello.deb\n" (line "abc" "hello.deb") ),

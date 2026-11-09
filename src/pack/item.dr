@@ -67,6 +67,7 @@ let regular : :integer = 0o644;
 when test {
     import std.test;
 
+    let tests : [:any];
     let tests = [
         test.case "every item has a path, a mode and a size"
             $( test.eq! [["a", 493, 7], ["b", 420, 2], ["c/", 493, 0], ["d", 511, 3]]

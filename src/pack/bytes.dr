@@ -56,6 +56,7 @@ let byte_sum s = {
 when test {
     import std.test;
 
+    let tests : [:any];
     let tests = [
         test.case "octal fields are zero-filled"
             $( test.eq! ["0000755", "00000000000", "17"] [octal 7 493, octal 11 0, octal 1 15] ),

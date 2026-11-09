@@ -70,11 +70,13 @@ let is_app : :map -> :bool;
 let is_app m = (manifest.doc m).["graphics" else ()] != ();
 
 /// A list-valued key, a single item allowed for a list of one.
+priv let listed : :map -> :string -> [:any];
 priv let listed m key = match toml.get () (manifest.doc m) "graphics" key {
     () => [],
     v => match type_of v { :list => v, _ => [v] },
 };
 
+priv let at : :map -> :string -> :string;
 priv let at m p = path.join (manifest.root m) p;
 
 /// The section as an `App`, its paths relative to the manifest.
@@ -146,6 +148,7 @@ let runtime! o app = {
 };
 
 /// The nearest `name` directory at or above `from` that holds a browser VM.
+priv let above! : :string -> :string -> :string | :unit;
 priv let rec above! from name = {
     let candidate = path.join from name;
     if file.is_file! (path.join candidate "dream-browser.wasm") { candidate }
@@ -221,6 +224,7 @@ let build! m o = {
     Result.ok (build.output_of m o)
 };
 
+priv let assemble! : :map -> :map -> App -> :string -> :string -> :string -> :any;
 priv let assemble! m o app runtime web staging = {
     let assets = path.join staging "assets";
     file.mkdir_all! assets
@@ -248,6 +252,7 @@ priv let assemble! m o app runtime web staging = {
 /// link in a directory is refused, not followed: the site is published, and a
 /// link to `~/.ssh` in `images/` would publish what it leads to. (The desktop
 /// host serves none either.)
+priv let ship! : :string -> :string -> :any;
 priv let ship! from to = if file.is_dir! from {
     list.each! (fn! rel -> {
         let source = path.join from rel;
@@ -263,8 +268,10 @@ priv let ship! from to = if file.is_dir! from {
 when test {
     import std.test;
 
+    let of : :string -> :map;
     let of text = manifest.make "/app" (toml.parse_or %{} text);
 
+    let tests : [:any];
     let tests = [
         test.case "a package is an application by its section alone" $( test.eq! [true, false]
             [is_app (of "[package]\nname = \"a\"\n[graphics]\n"), is_app (of "[package]\nname = \"a\"\n")] ),

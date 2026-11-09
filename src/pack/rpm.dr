@@ -293,8 +293,10 @@ let make! sp lay dest wanted = {
 when test {
     import std.test;
 
+    let u32 : :string -> :integer -> :integer;
     let u32 = fn s at -> list.fold (fn acc i -> acc * 256 + str.byte (at + i) s) 0 [0, 1, 2, 3];
 
+    let tests : [:any];
     let tests = [
         test.case "the lead is 96 bytes"
             $( test.eq! 96 (str.byte_length (lead (spec.Spec.new "." (%{}) "demo" "1.0" :x86_64 :linux))) ),

@@ -25,9 +25,12 @@ import build;
 import manifest;
 import documentation.markdown;
 
+let context : :map -> :string -> :integer -> :string -> :map;
 let context m compiler timeout scratch = %{ :manifest => m, :compiler => compiler, :timeout => timeout,
                                             :scratch => scratch, :page => "", :results => %{} };
+let output : :map -> :string;
 let output r = r.[:out else ""] + r.[:err else ""];
+let report : :string -> :map -> :string;
 let report phase r = {
     let label = if r.[:timed_out else false] { phase + " timed out" }
         else { phase + " · exit " + to_string r.[:code else (0 - 1)] };
@@ -78,6 +81,7 @@ let describe page code = {
 };
 
 /// Compile and run one example: `[html, whether both phases finished cleanly]`.
+let run! : :map -> :string -> :any;
 let run! ctx code = try! {
     let dir = path.join ctx.[:scratch] (io.digest code);
     file.mkdir_all! dir
@@ -115,6 +119,7 @@ let run! ctx code = try! {
 /// time, and answer `[results, unexpected]`: the context's `:results`, each
 /// distinct example's `[html, clean]` by its code, and a line for each example
 /// whose outcome is not the one its fence promises.
+let run_all! : :map -> :integer -> [:any] -> :any;
 let run_all! ctx jobs sources = {
     let wanted = flat_map (fn [page, text, m] ->
         map (fn [code, fails] -> [page, code, fails, m]) (found (str.split "\n" text))) sources;
@@ -134,6 +139,7 @@ let run_all! ctx jobs sources = {
 };
 
 /// Markdown with each example's result after it, from `run_all!`'s answers.
+let render : :map -> :string -> :string;
 let render ctx text = markdown.render_with (fn info code -> {
     let language = list.head (fence_info info);
     markdown.code_html language code

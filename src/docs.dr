@@ -25,6 +25,7 @@ import build;
 import manifest;
 import serve;
 
+let opts : [cli.Option];
 let opts = [
     cli.value "C" "dir" "DIR" "the project (default: here, or above)",
     cli.value "o" "output" "DIR" "output directory (default: target/docs, relative to project)",
@@ -36,6 +37,7 @@ let opts = [
     cli.flag "" "strict-examples" "fail when an example's outcome is not the one its fence promises",
     cli.flag "h" "help" "show documentation options",
 ];
+let usage : :string;
 let usage = "mind docs -- compile guides and source API documentation\n\nusage: mind docs [options]\n\n"
     + cli.options_help opts + "\n\nConfigure title, guides, output and api in [docs] in mind.toml.\n"
     + "Write guides in Markdown and document public declarations with /// comments.\n"
@@ -45,31 +47,41 @@ let usage = "mind docs -- compile guides and source API documentation\n\nusage: 
 
 /// What `mind docs serve` adds to `mind docs`: `serve`'s own options, and
 /// `--watch`.
+let serve_opts : [cli.Option];
 let serve_opts = list.append serve.opts [
     cli.flag "w" "watch" "build again whenever a guide, a module or mind.toml changes",
     cli.flag "" "no-build" "serve what was built last, without building",
 ];
+let fail! : :string -> :any;
 let fail! why = {
     console.error! ("mind docs: " + why)
     os.exit! 1
 };
+let read! : :string -> :string;
 let read! path = match file.read! path { Option.none => fail! ("cannot read " + path), Option.some(text) => text };
+let page : :string -> :string -> :string -> :string -> :map;
 let page url title body text = %{ :url => url, :title => title, :body => body, :text => text };
+let html_path : :string -> :string;
 let html_path path = str.slice 0 (len path - 3) path + ".html";
+let ignored : :string -> :bool;
 let ignored path = list.any (fn p -> list.contains p ["target", "build", ".git", ".hg", ".svn", "node_modules", "tests", "examples"]) (str.split "/" path);
 let files! : :string -> [:string];
 let files! dir = if io.is_dir! dir { list.sort (filter (fn p -> not (ignored p)) (file.walk! dir)) } else { [] };
 /// A guide, read: its page and its Markdown.
+let guide! : :string -> :any -> :map;
 let guide! dir rel = %{ :url => "guides/" + html_path rel, :rel => rel, :text => read! (path.join dir rel) };
+let guide_page : :map -> :map -> :map;
 let guide_page ctx g = page g.[:url] (markdown.title g.[:rel] g.[:text])
                             (examples.render ctx.[:page => g.[:url]] g.[:text]) g.[:text];
 /// A module, read: where its page goes, its source and its documented entries.
+let module! : :map -> :string -> :string -> :any -> :map;
 let module! m label dir rel = {
     let text = read! (path.join dir rel);
     %{ :manifest => m, :label => label, :rel => rel, :text => text, :entries => api.extract text,
        :url => "api/" + label + "/" + html_path rel }
 };
 /// A module's name as it is imported: `std.http.server`, `demo.lib`.
+let module_name : :map -> :string;
 let module_name info = {
     let rel = info.[:rel];
     let module = str.slice 0 (len rel - 3) rel;
@@ -77,7 +89,9 @@ let module_name info = {
     info.[:label] + (if stem == "" { "" } else { "." + str.replace "/" "." stem })
 };
 /// How much of a module is documented, as its card and its page say it.
+let documented : [:any] -> :string;
 let documented entries = match list.length entries { 1 => "1 documented name", n => to_string n + " documented names" };
+let module_pages : :map -> :map -> [:map];
 let module_pages ctx info = {
     let label = info.[:label];
     let rel = info.[:rel];
@@ -93,12 +107,14 @@ let module_pages ctx info = {
          page source (name + " source") ("<h1>" + markdown.escape name + " source</h1>" + api.source_html info.[:text]) ""]
     }
 };
+let package_modules! : :map -> [:map];
 let package_modules! m = {
     let label = manifest.name m;
     if label == "" || markdown.slug label != label { fail! "package names used in docs must contain only lowercase letters, digits, hyphens and underscores" }
     let dir = manifest.src! m;
     map (fn! rel -> module! m label dir rel) (filter (str.ends_with ".dr") (files! dir)) |> strict!
 };
+let api_modules! : :map -> [:map];
 let api_modules! m = {
     let own = if manifest.is_package m { package_modules! m } else { [] };
     let children = flat_map (fn! member -> match manifest.find! (path.join (manifest.root m) member) {
@@ -114,6 +130,7 @@ let api_modules! m = {
 /// programs get, and their examples are not run again: they are the
 /// library's, and its own site shows them run. None for the library itself,
 /// or for a project that says `[docs] std = false`.
+let std_modules! : :map -> [:map] -> [:map];
 let std_modules! m own = {
     let wanted = toml.get true (manifest.doc m) "docs" "std" != false && not (list.any (fn i -> i.[:label] == "std") own);
     if not wanted { [] }
@@ -125,6 +142,7 @@ let std_modules! m own = {
     }
 };
 /// The page that opens the standard library's reference: a card a module.
+let library_page : [:map] -> :map;
 let library_page infos = {
     let url = "api/std/index.html";
     let site = theme.Site.make "Standard library" "" "The modules every Dream program can import. Names in code anywhere in these docs link here.";
@@ -133,6 +151,7 @@ let library_page infos = {
                                                          else { [[theme.relative_root url + i.[:url], module_name i, documented i.[:entries]]] }) infos))
          "standard library std"
 };
+let write! : :string -> :string -> :string -> :any;
 let write! out rel text = {
     let path = path.join out rel;
     file.mkdir_all! (file.parent path)
@@ -140,12 +159,14 @@ let write! out rel text = {
 };
 /// Where the guides are read from and the site is written, as `c` and the
 /// manifest say: `[guides, output]`, both absolute.
+let places! : cli.Parsed -> :map -> :any;
 let places! c m = {
     let cfg = manifest.doc m;
     let root = manifest.root m;
     [path.absolute! (path.join root (cli.get (toml.get "docs" cfg "docs" "guides") c "guides")),
      path.absolute! (path.join root (cli.get (toml.get "target/docs" cfg "docs" "output") c "output"))]
 };
+let build! : cli.Parsed -> :map -> :any;
 let build! c m = {
     let cfg = manifest.doc m;
     let root = manifest.root m;
@@ -232,6 +253,7 @@ let stamp! c m = {
 
 /// Build again each time `stamp!` changes, looking once a second, for as long
 /// as the server runs.
+let watch! : cli.Parsed -> :map -> :any -> :any;
 let watch! c m before = {
     proc.sleep! 1000
     let now = stamp! c m;
@@ -244,6 +266,7 @@ let watch! c m before = {
 
 /// `mind docs serve`: build, then serve the output, and with `--watch` keep it
 /// current.
+let serve! : cli.Parsed -> :map -> :any;
 let serve! c m = {
     if not (cli.flag_set c "no-build") { build! c m }
     let [_, out] = places! c m;
@@ -254,6 +277,7 @@ let serve! c m = {
     serve.serve! c out "the documentation"
 };
 
+let run! : [:string] -> :any;
 let run! args = match args {
     ["serve", ..rest] => match cli.parse (list.append opts serve_opts) rest {
         Result.error(why) => fail! (why + "\n" + usage),
@@ -266,6 +290,7 @@ let run! args = match args {
     },
     _ => build_command! args,
 };
+let build_command! : [:string] -> :any;
 let build_command! args = match cli.parse opts args {
     Result.error(why) => fail! (why + "\n" + usage),
     Result.ok(c) => if cli.flag_set c "help" { console.print! usage }

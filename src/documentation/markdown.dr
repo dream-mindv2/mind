@@ -3,25 +3,31 @@ import std.list;
 import std.str;
 import std.map;
 
+let escape : :string -> :string;
 let escape text = str.escape_html text;
+let tail : :integer -> :string -> :string;
 let tail n s = str.slice n (len s - n) s;
+let slug : :string -> :string;
 let slug s = {
     let chars = str.chars (str.lower s);
     let clean = str.of_chars (map (fn c -> if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' { c } else { '-' }) chars);
     str.join_str "-" (filter (fn x -> x != "") (str.split "-" clean))
 };
+let safe_url : :string -> :bool;
 let safe_url url = {
     let u = str.lower (str.trim url);
     not (str.contains_str "\\" u) && not (str.starts_with "//" u)
     && not (list.any (fn c -> c <= ' ') (str.chars u))
     && (not (str.contains_str ":" u) || str.starts_with "https://" u || str.starts_with "http://" u || str.starts_with "mailto:" u)
 };
+let href : :string -> :string;
 let href url = {
     let parts = str.split "#" url;
     let path = list.head parts;
     let suffix = if list.length parts > 1 { "#" + str.join_str "#" (list.tail parts) } else { "" };
     if not (str.contains_str ":" path) && str.ends_with ".md" path { str.slice 0 (len path - 3) path + ".html" + suffix } else { url }
 };
+let inline : :string -> :string;
 let rec inline s = {
     if s == "" { "" }
     else if str.starts_with "`" s {
@@ -58,10 +64,12 @@ let rec inline s = {
         escape (str.slice 0 take s) + inline (tail take s)
     }
 };
+let heading : :string -> :any;
 let heading line = {
     let n = str.span "#" 0 line;
     if n > 0 && n <= 6 && str.slice n 1 line == " " { [n, str.trim (tail n line)] } else { () }
 };
+let list_item : :string -> :any;
 let list_item line = {
     if str.starts_with "- " line || str.starts_with "* " line || str.starts_with "+ " line { ["ul", tail 2 line] }
     else {
@@ -69,23 +77,29 @@ let list_item line = {
         if n > 0 && str.slice n 2 line == ". " { ["ol", tail (n + 2) line] } else { () }
     }
 };
+let cells : :string -> [:string];
 let cells line = {
     let s = str.trim line;
     let a = if str.starts_with "|" s { tail 1 s } else { s };
     let b = if str.ends_with "|" a { str.slice 0 (len a - 1) a } else { a };
     map str.trim (str.split "|" b)
 };
+let separator : :string -> :bool;
 let separator line = str.contains_str "-" line && list.all (fn c -> c == '-' || c == ':' || c == '|' || c == ' ') (str.chars (str.trim line));
+let row : :string -> :string -> :string;
 let row tag line = "<tr>" + str.join_str "" (map (fn c -> "<" + tag + ">" + inline c + "</" + tag + ">") (cells line)) + "</tr>";
+let special : :string -> :bool;
 let special line = {
     let s = str.trim line;
     s == "" || heading s != () || list_item s != () || str.starts_with "```" s || str.starts_with "~~~" s || str.starts_with "> " s || s == "---" || s == "***"
 };
+let fenced : :string -> [:string] -> [:string] -> [:any];
 let rec fenced marker lines acc = match lines {
     [] => [str.join_str "\n" (list.reverse acc), []],
     [line, ..rest] => if str.starts_with marker (str.trim line) { [str.join_str "\n" (list.reverse acc), rest] }
                     else { fenced marker rest (list.cons line acc) },
 };
+let items : :string -> [:string] -> [:string] -> [:any];
 let rec items kind lines acc = match lines {
     [line, ..rest] => match list_item (str.trim line) {
         [k, text] if k == kind => items kind rest (list.cons ("<li>" + inline text + "</li>") acc),
@@ -93,6 +107,7 @@ let rec items kind lines acc = match lines {
     },
     [] => [str.join_str "" (list.reverse acc), []],
 };
+let render_lines : (:string -> :string -> :string) -> [:string] -> :map -> :string;
 let rec render_lines code_html lines seen = match lines {
     [] => "",
     [line, ..rest] => {
@@ -134,11 +149,15 @@ let rec render_lines code_html lines seen = match lines {
         }
     },
 };
+let render_with : (:string -> :string -> :string) -> :string -> :string;
 let render_with code_html text = render_lines code_html (str.split "\n" (str.replace "\r\n" "\n" text)) (%{});
+let title : :string -> :string -> :string;
 let title fallback text = match list.find (fn l -> str.starts_with "# " l) (str.lines text) {
     Option.none => fallback, Option.some(line) => str.trim (tail 2 line),
 };
 
+let code_html : :string -> :string -> :string;
 let code_html language code = "<div class=\"code\">" + (if language == "" { "" } else { "<span class=\"lang\">" + escape language + "</span>" })
     + "<pre><code class=\"language-" + escape (slug language) + "\">" + escape code + "</code></pre></div>";
+let render : :string -> :string;
 let render text = render_with code_html text;

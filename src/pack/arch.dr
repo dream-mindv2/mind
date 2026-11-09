@@ -177,6 +177,7 @@ when test {
     import std.test;
     import std.toml;
 
+    let sp! : :unit -> :any;
     let sp! () = match toml.parse ("[package]\nname = \"demo\"\nversion = \"1.0\"\n[ship]\nsummary = \"a demo\"\n"
                                    + "arch = \"x86_64\"\nlicense = \"MIT\"\n[ship.arch]\ndepends = [\"glibc\", \"libffi >= 3.4\"]\n") {
         Result.ok(doc) => match spec.of_doc "." doc (%{}) (%{ "postinst" => "#!/bin/sh\necho hi\n" }) {
@@ -186,8 +187,10 @@ when test {
         other => raise! other,
     };
 
+    let lay : Layout;
     let lay = Layout.make [item.Item.text "etc/demo.conf" 420 "x", item.Item.link "usr/bin/d" "demo"] ["etc/demo.conf"] 7;
 
+    let tests : [:any];
     let tests = [
         test.case "the file is named as pacman names it"
             $( test.eq! "demo-1.0-1-x86_64.pkg.tar.zst" (file_name (sp! ()) :zstd) ),

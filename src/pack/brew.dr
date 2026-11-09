@@ -122,6 +122,7 @@ let make! sp lay dest = {
 when test {
     import std.test;
 
+    let tests : [:any];
     let tests = [
         test.case "class names"
             $( test.eq! ["Hello", "HelloWorld", "PythonAT312", "LibfooBar"]

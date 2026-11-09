@@ -34,10 +34,12 @@ import util;
 
 /// Where fetched packages are kept. Shared between projects, because a
 /// repository at a given revision is the same bytes whoever asked for it.
+let cache_root! : :unit -> :string;
 let cache_root! () = util.mind_home! ();
 
 /// A URL turned into one path segment. Not a hash: a directory you can read is
 /// worth more than one you cannot when a fetch goes wrong and you want to look.
+let slug : :string -> :string;
 let slug url = {
     let keep c =
         (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
@@ -45,6 +47,7 @@ let slug url = {
     str.map (fn c -> if keep c { c } else { '_' }) url
 };
 
+let dep_dir! : [:any] -> :string;
 let dep_dir! d = {
     let rev = manifest.dep_rev d;
     let at = match rev { [:none, _] => "", [_, v] => "@" + to_string v };
@@ -67,6 +70,7 @@ let argument what value =
     else { Result.ok value };
 
 /// Run a command, and answer `[:ok, out]` or `[:error, message]`.
+let run! : :string -> :string -> [:string] -> :any;
 let run! what program args = {
     let r = os.exec_for! program args 600000;
     let code = r.[:code else (0 - 1)];
@@ -81,6 +85,7 @@ let run! what program args = {
     }
 };
 
+let git_fetch! : [:any] -> :string -> :any;
 let git_fetch! d dir = {
     match manifest.dep_rev d {
         [:none, _] => Result.error "needs `tag`, `rev` or `branch` -- an unpinned git dependency is not reproducible",
@@ -91,6 +96,7 @@ let git_fetch! d dir = {
 /// A fresh checkout for an explicit install. Unlike a dependency, a program
 /// requested at the command line may ask for the default branch's current
 /// HEAD. Dependencies still go through `git_fetch!` and require a pin.
+let git_clone! : [:any] -> :string -> :any;
 let git_clone! d dir = {
     let? url = argument "a git URL" (to_string (manifest.spec_get d "git"));
     let rev = manifest.dep_rev d;
@@ -117,6 +123,7 @@ let git_clone! d dir = {
     }
 };
 
+let url_fetch! : [:any] -> :string -> :any;
 let url_fetch! d dir = {
     let? url = argument "a URL" (to_string (manifest.spec_get d "url"));
     let archive = dir + ".tar.gz";
@@ -153,11 +160,14 @@ let url_fetch! d dir = {
 /// Where a fetched copy keeps its hash, so a build hashes nothing it hashed
 /// before. `mind verify` is what rehashes, for a cache that may have been
 /// changed by hand.
+let hash_file : :string;
 let hash_file = ".mind-hash";
 
+let prefix : :string;
 let prefix = "sha256:";
 
 /// Whether a file under a package is part of what it is.
+let hashed : :string -> :bool;
 let hashed rel =
     list.all (fn part -> not (list.contains part [".git", marker, commit_file, hash_file, sign.file_name]))
              (path.segments rel);
@@ -185,6 +195,7 @@ let hex_of h = {
 /// The hash of a fetched dependency's copy, or `()` for a directory on this
 /// machine, which is the project's to change and has nothing to pin. Kept in
 /// `hash_file` after the first time, as `commit!` keeps its commit.
+let hash! : [:any] -> :string -> :any;
 let hash! d dir =
     match manifest.dep_kind d {
         :git => cached_hash! dir,
@@ -192,6 +203,7 @@ let hash! d dir =
         _ => (),
     };
 
+let cached_hash! : :string -> :any;
 let cached_hash! dir =
     match file.read! (path.join dir hash_file) {
         Option.none => {
@@ -208,12 +220,15 @@ let cached_hash! dir =
 // not under its source's name: its source is exactly what could not be
 // reached, and the hash is the one thing about it that has been checked.
 
+let stored! : :any -> :string;
 let stored! hex = path.join (path.join (path.join (cache_root! ()) "cache") "sha256") hex;
 
 /// A mirror named by a URL rather than a directory.
+let is_url : :string -> :bool;
 let is_url mirror = str.find "://" mirror >= 0;
 
 /// Where a mirror keeps a package: `HEX.tar.gz`, in a directory or under a URL.
+let archive_at : :string -> :string -> :string;
 let archive_at mirror hex =
     match is_url mirror {
         true => str.trim_suffix "/" mirror + "/" + hex + ".tar.gz",
@@ -221,6 +236,7 @@ let archive_at mirror hex =
     };
 
 /// Unpack a mirror's archive of `hex` into `dir`.
+let unpack! : :string -> :any -> :string -> :any;
 let unpack! mirror hex dir = {
     let at = archive_at mirror hex;
     let local = match is_url mirror { true => dir + ".tar.gz", false => at };
@@ -267,6 +283,7 @@ let archive! h from into = {
 /// does, into the store. `commit` is what the lock says a git dependency was
 /// checked out at; a mirror's archive has no `.git` to ask, and what it says
 /// about itself is not what was checked.
+let from_mirrors! : [:string] -> :string -> :any -> :any;
 let from_mirrors! mirrors h commit = {
     let hex = hex_of h;
     let rec go! ms tried =
@@ -323,13 +340,16 @@ let mirrors! own = {
 /// need not have a manifest, so "is there a `mind.toml`?" cannot be how a
 /// complete fetch is told from one that died halfway; this is. A directory from
 /// before the marker existed, which always had a manifest, still counts.
+let marker : :string;
 let marker = ".mind-fetched";
 
+let is_fetched! : :string -> :bool;
 let is_fetched! dir =
     io.exists! (path.join dir marker) || io.exists! (path.join dir "mind.toml");
 
 /// Throw away a fetched copy so that the next resolve fetches it again. What
 /// `mind update` does, and the only way a branch-pinned dependency moves.
+let forget! : [:any] -> :any;
 let forget! d =
     match manifest.dep_kind d {
         :git => run! "rm" "rm" ["-rf", dep_dir! d],
@@ -349,6 +369,7 @@ let forget! d =
 /// Whether the copy found agrees with the lock, and whether whoever signed it
 /// is trusted, are `build.dr`'s to say: those want the lock and the project's
 /// keys, and this only finds bytes.
+let resolve! : :string -> [:any] -> :any -> [:string] -> :any;
 let resolve! from_root d locked mirrors = {
     match manifest.dep_kind d {
         :path => {
@@ -394,6 +415,7 @@ let resolve! from_root d locked mirrors = {
 };
 
 /// Where a fetched git dependency records the commit it checked out.
+let commit_file : :string;
 let commit_file = ".mind-commit";
 
 /// The commit a git dependency's fetched copy is at, or `()` for anything
@@ -402,6 +424,7 @@ let commit_file = ".mind-commit";
 /// build, and a process per dependency per build is exactly the cost a large
 /// graph cannot pay. A copy fetched before the file existed is asked once and
 /// the answer kept.
+let commit! : [:any] -> :string -> :any;
 let commit! d dir =
     match manifest.dep_kind d {
         :git => match file.read! (path.join dir commit_file) {
@@ -421,6 +444,7 @@ let commit! d dir =
 when test {
     import std.test;
 
+    let tests : [:any];
     let tests = [
         test.case "a URL or revision is never read as an option" $( test.eq!
             [Result.ok "https://x/y.git", Result.error "a git URL may not begin with `-`: --upload-pack=touch /tmp/x"]

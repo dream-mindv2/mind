@@ -70,6 +70,7 @@ let size_of members = {
 when test {
     import std.test;
 
+    let tests : [:any];
     let tests = [
         test.case "a header and its name are padded to four bytes"
             $( {

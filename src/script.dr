@@ -441,6 +441,7 @@ let compile_args outcomes = {
 when test {
     import std.test;
 
+    let tests : [:any];
     let tests = [
         test.case "the files a driver was compiled from"
             $( test.eq! ["/s/std/list.dr", "/p/build.dr"]

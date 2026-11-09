@@ -101,12 +101,14 @@ let choices text = {
 };
 
 // expr := term (OR term)* ; term := atom (AND atom)* ; atom := ID [WITH ID] | ( expr )
+priv let expr : [:string] -> :any;
 priv let rec expr tokens = match term tokens {
     () => (),
     [left, ["OR", ..rest]] => match expr rest { () => (), [right, after] => [list.append left right, after] },
     done => done,
 };
 
+priv let term : [:string] -> :any;
 priv let rec term tokens = match atom tokens {
     () => (),
     [left, ["AND", ..rest]] => match term rest {
@@ -116,6 +118,7 @@ priv let rec term tokens = match atom tokens {
     done => done,
 };
 
+priv let atom : [:string] -> :any;
 priv let atom tokens = match tokens {
     ["(", ..rest] => match expr rest { [inner, [")", ..after]] => [inner, after], _ => () },
     [id, "WITH", exception, ..rest] if is_id id && is_id exception => [[[id]], rest],
@@ -123,6 +126,7 @@ priv let atom tokens = match tokens {
     _ => (),
 };
 
+priv let is_id : :string -> :bool;
 priv let is_id t = t != "" && not (list.contains t ["(", ")", "AND", "OR", "WITH"]);
 
 // --- judging ---------------------------------------------------------------------
@@ -165,11 +169,13 @@ let check own dep accepted = match [choices own, choices dep] {
 };
 
 /// Why a dependency with no licence declared fails.
+let undeclared : :string;
 let undeclared = "declares no licence, which means it may not be redistributed";
 
 when test {
     import std.test;
 
+    let tests : [:any];
     let tests = [
         test.case "expressions as choices"
             $( test.eq! [[["MIT"], ["Apache-2.0"]], [["MIT", "BSD-3-Clause"], ["Apache-2.0", "BSD-3-Clause"]],

@@ -41,6 +41,7 @@ let write! path epoch members = {
 when test {
     import std.test;
 
+    let tests : [:any];
     let tests = [
         test.case "a header is sixty bytes, and ends with the magic"
             $( {

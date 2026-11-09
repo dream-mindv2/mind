@@ -56,11 +56,13 @@ import sign;
 import toolchain;
 import util;
 
+let version : :string;
 let version = "0.3.8";
 
 /// The options, described once. `cli` parses from this list and prints the
 /// help from the same list, so an option cannot be one without being the
 /// other.
+let opts : [cli.Option];
 let opts = [
     cli.section "where to look",
     cli.value "C" "dir" "DIR" "run as if started in DIR (the project is found there, or above)",
@@ -101,6 +103,7 @@ let opts = [
 /// The subcommands, described once: `cli.commands` chooses one by that name and
 /// the help prints from the same table. Commands that take arguments of their
 /// own -- `new <name>`, `run [args]` -- read them from the parsed rest.
+let command_spec : [cli.Command];
 let command_spec = [
     cli.command "new"   "create a project in ./<name>" [],
     cli.command "init"  "make this directory a project, named after it or [name]" [],
@@ -160,6 +163,7 @@ let command_spec = [
     cli.command "help"  "this message" [],
 ];
 
+let notes : :string;
 let notes = "
 A project is a directory with a `mind.toml`, its modules in `src/` beside it.
 Commands other than `new` and `init` look for one here or above, so they work
@@ -280,6 +284,7 @@ packages on the search path. It works outside a project too, with just the
 standard library.
 "
 
+let usage : :string;
 let usage = "mind -- the build tool for Dream
 
 usage: mind <command> [options] [arguments]
@@ -287,12 +292,14 @@ usage: mind <command> [options] [arguments]
 commands:
 " + cli.commands_help command_spec + "\n\n" + cli.options_help opts + "\n" + notes;
 
+let fail! : :any -> :any;
 let fail! message = {
     console.error! ("mind: " + to_string message)
     os.exit! 1
 };
 
 /// Load the project here or above, or stop with the reason.
+let project! : :unit -> :map;
 let project! () =
     match manifest.find! (os.cwd! ()) {
         Result.ok(m) => m,
@@ -350,6 +357,7 @@ let name_problem name =
               else { "`" + name + "` cannot name a package: use letters, digits and `_`" },
     };
 
+let cmd_new! : :string -> :any;
 let cmd_new! name = {
     match name_problem name { () => (), why => fail! why }
     if io.exists! name { fail! (name + " already exists") }
@@ -362,6 +370,7 @@ let cmd_new! name = {
 /// `mind init [NAME]`: make the directory `mind` is in a project, named after
 /// the directory unless NAME says otherwise. `new` for a directory that
 /// already exists -- often one that already has code in it.
+let cmd_init! : :string | :unit -> :any;
 let cmd_init! given = {
     let here = os.cwd! ();
     let name = match given { () => path.basename here, n => n };
@@ -378,6 +387,7 @@ let cmd_init! given = {
 /// Build, and say so. `quiet` sends the line to stderr rather than stdout,
 /// for the commands whose stdout is the program's: `mind run > out.txt` should
 /// capture what the program printed and nothing of ours.
+let report_build! : :map -> :map -> :string -> :bool -> :any;
 let report_build! m o label quiet = {
     match build.compile! m o {
         Result.error(why) => {
@@ -396,6 +406,7 @@ let report_build! m o label quiet = {
 
 /// Hand the program's output on as our own, and its exit code with it. A build
 /// tool that swallows the status of what it ran is no use in a script.
+let relay! : :any -> :any;
 let relay! r =
     match r {
         [code, out, err] => {
@@ -406,6 +417,7 @@ let relay! r =
         },
     };
 
+let cmd_build! : :map -> :map -> :any;
 let cmd_build! m o = if graphics.is_app m {
     let image = built_app! m o "built" false;
     console.print! ("  " + image)
@@ -442,6 +454,7 @@ let warn_installed! m built = {
 
 /// A graphics application built (graphics.dr), and said so, as `report_build!`
 /// says a program is.
+let built_app! : :map -> :map -> :string -> :bool -> :string;
 let built_app! m o label quiet = match graphics.build! m o {
     Result.error(why) => fail! why,
     Result.ok(image) => {
@@ -456,6 +469,7 @@ let built_app! m o label quiet = match graphics.build! m o {
 /// -- the page, its scripts and the browser VM, with every path that names no
 /// file answered by the page, so a route reloads -- or its image run by the
 /// VM, which opens the window, backend and all, and is handed the terminal.
+let cmd_run_app! : :map -> :map -> cli.Parsed -> :any;
 let cmd_run_app! m o c = {
     let image = built_app! m o "built" true;
     let dir = graphics.dir_of m o;
@@ -646,6 +660,7 @@ let cmd_install! o0 c args = {
 /// than what the compile needs -- the VM, the compiler, an installer -- and
 /// where each one is. A workspace's compiler is its own unless the command
 /// line names one, as for `mind test`.
+let cmd_goals! : :map -> :map -> [:string] -> :any;
 let cmd_goals! m o0 names = {
     let o = match [build.option o0 :compiler (), manifest.compiler m] {
         [(), ()] => o0,
@@ -661,10 +676,12 @@ let cmd_goals! m o0 names = {
     }
 };
 
+let cmd_check! : :map -> :map -> :any;
 let cmd_check! m o = {
     report_build! m (build.with_option :extra ["--no-emit"] o) "checked" false
 };
 
+let cmd_run! : :map -> :map -> [:string] -> :any;
 let cmd_run! m o args = {
     report_build! m o "running" true
     relay! (build.run_image! m o args)
@@ -674,6 +691,7 @@ let cmd_run! m o args = {
 /// a project is around it, the way `python3 hello.py` is. Its image goes
 /// under `mind`'s own directory, in a folder named for where the file is,
 /// rather than into a `target/` the file's directory never asked for.
+let cmd_run_file! : :map -> :string -> [:string] -> :any;
 let cmd_run_file! o file args = {
     let at = path.absolute! file;
     let out = path.join_all (util.mind_home! ())
@@ -754,6 +772,7 @@ let tested! m = list.cons m (map (fn! d -> match manifest.load! (path.join (mani
     Result.error(why) => fail! ("workspace member `" + d + "`: " + why),
 }) (manifest.members m));
 
+let cmd_test! : :map -> :map -> [:string] -> :any;
 let cmd_test! m o0 asked = {
     let packages = tested! m;
     // A workspace's compiler is its members' too, unless the command line
@@ -808,6 +827,7 @@ let cmd_test! m o0 asked = {
 /// Outside a project it still starts: the standard library is enough to explore
 /// the language with, and asking for a `mind.toml` first would make the
 /// quickest thing here the most ceremonious.
+let cmd_repl! : :map -> :any;
 let cmd_repl! o =
     match manifest.find! (os.cwd! ()) {
         Result.ok(m) => match build.repl! m o { Result.error(why) => fail! why },
@@ -817,6 +837,7 @@ let cmd_repl! o =
 /// What this build would do, without doing it. The compiler is chosen from
 /// four places, so "which one is it going to run" is a real question, and the
 /// answer should not require reading the source of the build tool.
+let cmd_info! : :map -> :map -> :any;
 let cmd_info! m o = {
     console.print! (to_string (manifest.name m) + " v" + to_string (manifest.version m))
     console.print! ("  root     " + to_string (manifest.root m))
@@ -833,6 +854,7 @@ let cmd_info! m o = {
 /// Every package's options: what each declares, and what this build sets it
 /// to. A setting has five places it can come from, so "what is `threads`
 /// going to be?" deserves an answer that does not need them all read.
+let cmd_options! : :map -> :map -> :any;
 let cmd_options! m o = {
     let g = graph_of! m o;
     let values = g.[:options else (%{})];
@@ -860,6 +882,7 @@ let cmd_options! m o = {
 };
 
 /// Load the graph, or stop with the reason.
+let graph_of! : :map -> :map -> :map;
 let graph_of! m o =
     match build.resolve! m (build.with_option :dev true o) false {
         Result.error(why) => fail! why,
@@ -868,6 +891,7 @@ let graph_of! m o =
 
 /// One package, the way `deps` and `tree` show it: its key, what it calls
 /// itself when that is something else, and where it came from.
+let describe : :map -> :string;
 let describe n = {
     let key = build.node_key n;
     let called = match build.node_manifest n {
@@ -881,6 +905,7 @@ let describe n = {
     key + version + called + "  " + manifest.dep_source (build.node_dep n)
 };
 
+let cmd_deps! : :map -> :map -> :any;
 let cmd_deps! m o = {
     console.print! (to_string (manifest.name m) + " v" + to_string (manifest.version m))
     let g = graph_of! m o;
@@ -909,6 +934,7 @@ let cmd_deps! m o = {
 
 /// Who needs what. A package reached a second time is shown once and marked,
 /// so a diamond does not print its whole subtree twice and a cycle stops.
+let cmd_tree! : :map -> :map -> :any;
 let cmd_tree! m o = {
     console.print! (to_string (manifest.name m) + " v" + to_string (manifest.version m))
     let g = graph_of! m o;
@@ -938,6 +964,7 @@ let cmd_tree! m o = {
     :ok
 };
 
+let cmd_fetch! : :map -> :map -> :any;
 let cmd_fetch! m o = {
     let g = graph_of! m o;
     let fetched = filter (fn n -> manifest.dep_kind (build.node_dep n) != :path) (build.nodes g);
@@ -979,6 +1006,7 @@ let cmd_update! m o names = {
 
 /// Every fetched package of every program in the build, build scripts'
 /// included, once each.
+let fetched : :map -> [:map];
 let fetched g = {
     let every = list.concat (list.cons (build.nodes g)
                                        (map (fn pair -> build.nodes (list.nth 1 pair)) (build.build_graphs g)));
@@ -998,6 +1026,7 @@ let fetched g = {
 /// with, which the walk has just held to the lock. A build trusts the hash it
 /// kept rather than reading every file of every dependency each time, so a
 /// cache changed by hand gets past a build; it does not get past this.
+let cmd_verify! : :map -> :map -> :any;
 let cmd_verify! m o = {
     let ns = fetched (graph_of! m o);
     let changed = list.filter (fn! n -> fetch.tree_hash! (build.node_dir n)
@@ -1016,6 +1045,7 @@ let cmd_verify! m o = {
 /// `$MIND_MIRRORS` or `[fetch] mirrors` pointed there builds this project with
 /// none of its sources reachable. The directory can be served as it is, by
 /// `mind serve` or anything else, or committed beside the project.
+let cmd_mirror! : :map -> :map -> [:string] -> :any;
 let cmd_mirror! m o args = {
     let into = match args { [d] => d, _ => fail! "mirror needs one directory to write into" };
     let g = graph_of! m o;
@@ -1035,6 +1065,7 @@ let cmd_mirror! m o args = {
 // sign.dr says what a signature is and why; these are the author's half.
 
 /// Where the secret key is: `--signing-key`, or `$MIND_HOME/signing.key`.
+let signing_key_path! : cli.Parsed -> :string;
 let signing_key_path! c =
     match cli.get () c "signing-key" {
         () => path.join (util.mind_home! ()) "signing.key",
@@ -1046,6 +1077,7 @@ let signing_key_path! c =
 /// key, so it is never readable by anyone else while it holds one. An existing
 /// key is never replaced: every release it signed would stop verifying for
 /// whoever trusts it, and nothing could tell them why.
+let cmd_keygen! : cli.Parsed -> :any;
 let cmd_keygen! c = {
     let at = signing_key_path! c;
     if io.exists! at { fail! (at + " already holds a key, and replacing it would orphan every release it signed; "
@@ -1069,6 +1101,7 @@ let cmd_keygen! c = {
 };
 
 /// The secret key's seed, or a failure that says how to make one.
+let signing_seed! : cli.Parsed -> :string;
 let signing_seed! c = {
     let at = signing_key_path! c;
     match file.read! at {
@@ -1086,6 +1119,7 @@ let signing_seed! c = {
 /// left out. Anywhere else it is the directory as it stands, which is then
 /// what to pack. The signature is written into `mind.sig`, replacing this
 /// key's line from an earlier release and keeping any other key's.
+let cmd_sign! : :map -> cli.Parsed -> [:string] -> :any;
 let cmd_sign! m c args = {
     let root = manifest.root m;
     let seed = signing_seed! c;
@@ -1100,6 +1134,7 @@ let cmd_sign! m c args = {
 
 /// The release a command signs as: the one named, or `v` and the manifest's
 /// version.
+let release_of! : :map -> [:string] -> :string -> :any;
 let release_of! m args what =
     match args {
         [] => match version.parse (to_string (manifest.version m)) {
@@ -1110,6 +1145,7 @@ let release_of! m args what =
         _ => fail! (what + " takes one release name, the tag it will be released as"),
     };
 
+let in_git! : :string -> :bool;
 let in_git! root = io.exists! (path.join root ".git");
 
 /// `k` of this package as a fetch of its last commit would find it: a clone,
@@ -1117,6 +1153,7 @@ let in_git! root = io.exists! (path.join root ".git");
 /// files and uncommitted edits are not in it -- and said not to be. Outside
 /// git it is the directory as it stands. Whatever `k` answers must be forced
 /// before it is returned, since the clone is gone afterwards.
+let with_checkout! : :map -> :string -> (:string -> :any) -> :any;
 let with_checkout! m doing k = {
     let root = manifest.root m;
     match in_git! root {
@@ -1163,15 +1200,18 @@ let with_checkout! m doing k = {
 // still cannot be handed another index in its place.
 
 /// The index used when none is configured.
+let default_index : :string;
 let default_index = "github:dream-mindv2/index";
 
 /// The hash of the default index's first line, its keepers: what a first
 /// read is held to.
+let default_genesis : :string;
 let default_genesis = "sha256:ce53ecdbf4963c4bdac7a415ad1e6f7f628741489c99ae9e424c54efb27090da";
 
 /// The indexes to ask: `$MIND_INDEXES` (spaces or commas between them; `none`
 /// for none), then the project's `[fetch] indexes`, then the shared one when
 /// neither named any.
+let indexes! : :map | :unit -> [:string];
 let indexes! m = {
     let env = match os.env! "MIND_INDEXES" { () => [], v => str.words (str.replace "," " " v) };
     let own = match m { () => [], pm => manifest.indexes pm };
@@ -1183,6 +1223,7 @@ let indexes! m = {
 };
 
 /// `[owner, repo]` of a `github:` index, or `()`.
+let github_of : :string -> [:string] | :unit;
 let github_of place =
     match str.starts_with "github:" place {
         false => (),
@@ -1192,6 +1233,7 @@ let github_of place =
 /// How old an index's newest checkpoint may be, when this machine says rather
 /// than its keepers: `$MIND_INDEX_MAX_AGE`, then `[fetch] index-max-age`, as a
 /// duration (`14d`; `0` for no limit).
+let max_age_override! : :map | :unit -> :any;
 let max_age_override! m = {
     let given = match os.env! "MIND_INDEX_MAX_AGE" {
         () => match m { () => (), pm => manifest.index_max_age pm },
@@ -1207,6 +1249,7 @@ let max_age_override! m = {
 };
 
 /// The text of an index's log, wherever it is.
+let index_text! : :string -> :string;
 let index_text! place = {
     let fetched! url headers = {
         let scratch = path.join (util.mind_home! ()) ("index-" + file.scratch_suffix! ());
@@ -1235,6 +1278,7 @@ let index_text! place = {
 /// An index, verified; held to its pinned first line, to what this machine
 /// read of it before, and to the freshness its keepers promised; and then
 /// remembered as it is now.
+let read_index! : :map | :unit -> :string -> :any;
 let read_index! m place = {
     let s = match index.verify (index_text! place) { Result.ok(s) => s, Result.error(why) => fail! (place + ": " + why) };
     if place == default_index && default_genesis != () && index.head_at s 1 != default_genesis {
@@ -1267,6 +1311,7 @@ let read_index! m place = {
 /// repository's Action appends, for `github:` -- opened with `gh` when it is
 /// installed, and otherwise a link to open; and for anything else, the lines
 /// to send its keepers.
+let submit! : :string -> [index.Entry] -> :string -> :any;
 let submit! place entries title = {
     let body = str.join_str "\n" (list.map index.render entries);
     match [github_of place, fetch.is_url place] {
@@ -1290,6 +1335,7 @@ let submit! place entries title = {
 
 /// Place each entry at the end of the log in `dir` and write it, if all of
 /// them fit; answers how many. What the shared index's Action runs.
+let append! : :string -> [index.Entry] -> :any;
 let append! dir entries = {
     let log_path = path.join dir index.file_name;
     let before = match file.read! log_path { Option.none => "", Option.some(t) => if str.is_empty t || str.ends_with "\n" t { t } else { t + "\n" } };
@@ -1309,6 +1355,7 @@ let append! dir entries = {
 
 /// The entries in some text -- an issue's body, a file passed between keepers
 /// -- ignoring everything that is not one.
+let entries_in : :string -> [index.Entry];
 let entries_in text =
     list.flat_map (fn l -> match index.parse_line (str.trim l) { Option.some(e) => [e], Option.none => [] })
                   (str.split "\n" text);
@@ -1316,6 +1363,7 @@ let entries_in text =
 /// `[name, requirement]` when what `mind add` was given is a name to look up
 /// rather than a place: no scheme, no separator, and no directory of that name
 /// here. `NAME@REQUIREMENT` asks for releases a requirement accepts.
+let index_query! : :string -> :any;
 let index_query! source =
     if manifest.is_remote source || manifest.is_tarball source || str.find "/" source >= 0 || io.is_dir! source { () }
     else {
@@ -1325,6 +1373,7 @@ let index_query! source =
 
 /// The release of `name` the first index that has one offers:
 /// `[[release, source, hash, key], index, yanked]`.
+let find_in_indexes! : :map -> :string -> :any -> :any;
 let find_in_indexes! m name req = {
     let revoked = (build.trust_context! m).[:revoked else []];
     let rec ask! places tried =
@@ -1340,6 +1389,7 @@ let find_in_indexes! m name req = {
 };
 
 /// The index a command is about: `--index`, or the first configured.
+let index_of! : :map | :unit -> cli.Parsed -> :string;
 let index_of! m c =
     match cli.get () c "index" {
         () => match indexes! m { [first, .._] => first, [] => fail! "no index is configured" },
@@ -1347,6 +1397,7 @@ let index_of! m c =
     };
 
 /// The project here, if there is one: index commands work outside one.
+let maybe_project! : :unit -> :map | :unit;
 let maybe_project! () = match manifest.find! (os.cwd! ()) { Result.ok(m) => m, _ => () };
 
 /// Submit this package's last commit as `RELEASE` from `--source`. The commit
@@ -1394,6 +1445,7 @@ priv let step! dry what act = {
     if not dry { strict! (act ()) }
 };
 
+let cmd_release! : :map -> cli.Parsed -> [:string] -> :any;
 let cmd_release! m c args = {
     let root = manifest.root m;
     let dry = cli.flag_set c "dry-run";
@@ -1449,6 +1501,7 @@ let cmd_release! m c args = {
     else { step! dry ("publish " + tag) (fn! u -> cmd_publish! released c [tag]) }
 };
 
+let cmd_publish! : :map -> cli.Parsed -> [:string] -> :any;
 let cmd_publish! m c args = {
     let name = to_string (manifest.name m);
     if not (index.valid_name name) { fail! ("`" + name + "` is not a name an index can hold: lowercase letters, digits, - and _") }
@@ -1490,6 +1543,7 @@ let cmd_publish! m c args = {
 
 /// Every package the indexes have whose name holds `text`, with its newest
 /// release.
+let cmd_search! : :map | :unit -> [:string] -> :any;
 let cmd_search! m args = {
     let text = match args { [t] => t, [] => "", _ => fail! "search takes one piece of text" };
     let places = indexes! m;
@@ -1503,6 +1557,7 @@ let cmd_search! m args = {
 /// Every fetched dependency held to the indexes and to what is known now: a
 /// release since yanked, or signed by a key since revoked. What to run in CI,
 /// where a build only checks what it has to.
+let cmd_audit! : :map -> :map -> :any;
 let cmd_audit! m o = {
     let g = graph_of! m o;
     let ns = fetched g;
@@ -1531,6 +1586,7 @@ let cmd_audit! m o = {
 };
 
 /// `mind index VERB ..`: what keepers, owners and the shared index's Action do.
+let cmd_index! : cli.Parsed -> [:string] -> :any;
 let cmd_index! c args = {
     let m = maybe_project! ();
     let seed! () = signing_seed! c;
@@ -1643,6 +1699,7 @@ let cmd_index! c args = {
 /// Build the package in `dir` as reproducibly as it can be built, and answer
 /// the image's hash and where it is. The hash is forced here, while `dir`
 /// is still there.
+let build_reproducibly! : :string -> :map -> :any;
 let build_reproducibly! dir o = {
     let m = match manifest.load! dir { Result.ok(m) => m, Result.error(why) => fail! why };
     let o2 = build.with_option :reproducible true o;
@@ -1656,6 +1713,7 @@ let build_reproducibly! dir o = {
 /// Build this package's last commit reproducibly and sign what went in and
 /// what came out. The image is left where `mind build` puts it: that file is
 /// the one the attestation names, and the one to publish.
+let cmd_attest! : :map -> :map -> cli.Parsed -> [:string] -> :any;
 let cmd_attest! m o c args = {
     let root = manifest.root m;
     let seed = signing_seed! c;
@@ -1687,6 +1745,7 @@ let cmd_attest! m o c args = {
 /// attestation made with another compiler or standard library cannot be
 /// reproduced here, and is said to be skipped, not failed; a rebuild that
 /// differs is a failure, and so is having nothing to reproduce at all.
+let cmd_reproduce! : :map -> :map -> cli.Parsed -> [:string] -> :any;
 let cmd_reproduce! m o c args = {
     let compiler = match build.compiler_digest! m o { Result.ok(d) => d, Result.error(why) => fail! why };
     let std = build.std_digest! ();
@@ -1738,6 +1797,7 @@ let cmd_reproduce! m o c args = {
 /// rebuild on another VM that comes out the same counts like any other; one
 /// that comes out different is skipped and said to be on another VM, since
 /// the VM is the one difference left that could explain it.
+let reproduce_in! : :string -> :map -> :any -> :string -> :string -> :string -> :string -> :any;
 let reproduce_in! dir o attested compiler std vm file_hash = {
     let source = fetch.tree_hash! dir;
     let say! line = console.print! ("  " + line);
@@ -1789,6 +1849,7 @@ let reproduce_in! dir o attested compiler std vm file_hash = {
 /// Put a statement into this package's `mind.sig`. The file is read, and the
 /// read forced, before it is written: handed to `write!` unforced, the read
 /// would happen after the write had already emptied the file.
+let add_statement! : :string -> :any -> :any;
 let add_statement! root s = {
     let at = path.join root sign.file_name;
     let text = sign.with_statement (match file.read! at { Option.none => "", Option.some(t) => t }) s;
@@ -1800,6 +1861,7 @@ let add_statement! root s = {
 /// new one from the next release that carries the statement, and stops
 /// trusting this one: a rotation is also a retirement, and a lock that has
 /// seen it remembers it. The new key's secret is not needed, only its name.
+let cmd_rotate! : :map -> cli.Parsed -> [:string] -> :any;
 let cmd_rotate! m c args = {
     let seed = signing_seed! c;
     let next = match args {
@@ -1820,6 +1882,7 @@ let cmd_rotate! m c args = {
 /// one named. It needs no key to publish, which is the point -- a key that
 /// was lost or stolen can still be revoked -- and it is checked before it is
 /// written, since a statement that does not verify would only be ignored.
+let cmd_revoke! : :map -> cli.Parsed -> [:string] -> :any;
 let cmd_revoke! m c args = {
     let cert = match args { [f] => f, [] => signing_key_path! c + ".revoke", _ => fail! "revoke takes one certificate" };
     let found = match file.read! cert {
@@ -1842,6 +1905,7 @@ let cmd_revoke! m c args = {
 /// The spec `mind add` writes, from what was typed: the source read the way
 /// the manifest would read it, then `--tag`, `--branch` or `--rev` in place
 /// of whatever the source's `#` said, and the `--key`s it must be signed by.
+let add_spec! : :string -> cli.Parsed -> :any;
 let add_spec! source c = {
     let base = manifest.string_spec source;
     let pins = filter (fn p -> cli.get () c p != ()) ["tag", "branch", "rev"];
@@ -1868,11 +1932,13 @@ let add_spec! source c = {
 /// how a repository of a Dream package is usually named and never how it is
 /// imported.
 
+let guessed_name : :string -> :string;
 let guessed_name source =
     str.trim_prefix "dream-"
         (str.trim_suffix ".tgz" (str.trim_suffix ".tar.gz" (str.trim_suffix ".git"
             (path.basename (str.trim_suffix "/" (list.head (manifest.split_ref source)))))));
 
+let add_name! : :string -> :string -> cli.Parsed -> :string;
 let add_name! source dir c =
     match cli.get () c "name" {
         () => match manifest.load_dependency! dir {
@@ -1882,6 +1948,7 @@ let add_name! source dir c =
         n => n,
     };
 
+let cmd_add! : :map -> cli.Parsed -> [:string] -> :any;
 let cmd_add! m c args = {
     let given = match args {
         [s] => s,
@@ -1974,6 +2041,7 @@ let cmd_remove! m names = {
     }
 };
 
+let cmd_clean! : :map -> :any;
 let cmd_clean! m = {
     let dir = build.target_dir m;
     if io.exists! dir {
@@ -1984,6 +2052,7 @@ let cmd_clean! m = {
     }
 };
 
+let filepatch! : :string -> :string -> :string -> :any;
 let filepatch! filein outfile using  = {
     let rec update_writer! out cont = {
         if cont && out{
@@ -2016,8 +2085,10 @@ let filepatch! filein outfile using  = {
     send! writer ()
     join! writer
 }
+let patch! : :string -> :string -> :any;
 let patch! filein fileout = filepatch! filein fileout "#!/bin/env dream\n"
 
+let cmd_patch! : :string -> :any -> :any;
 let cmd_patch! filein fileout = patch! filein $( if (fileout) {fileout} else {"./a.out"})
 
 /// Split `mind`'s own arguments from the program's at the first `--`.
@@ -2025,6 +2096,7 @@ let cmd_patch! filein fileout = patch! filein $( if (fileout) {fileout} else {".
 /// `mind run -- --help` has to run the program with `--help`, not print ours.
 /// Doing this before the options are parsed is what keeps the two lines apart:
 /// after it, nothing on the left can be meant for the program.
+let split_at_dashes : [:string] -> [[:string]];
 let rec split_at_dashes args =
     match args {
         [] => [[], []],
@@ -2037,14 +2109,17 @@ let rec split_at_dashes args =
 
 /// The program's defines: every `-D` that is not scoped to a package, and
 /// `--debug`, which is `-D debug` spelled the way people reach for it.
+let defines_of : cli.Parsed -> [:string];
 let defines_of c =
     list.append (filter (fn d -> config.split_scoped d == ()) (cli.all c "define"))
                 (if cli.flag_set c "debug" { ["debug"] } else { [] });
 
 /// Every `-D KEY:name=value`, as `[key, name, value]`.
+let sets_of : cli.Parsed -> [:any];
 let sets_of c = flat_map (fn d -> match config.split_scoped d { () => [], s => [s] }) (cli.all c "define");
 
 /// `--profile NAME`, or `--release` for that one; `debug` when neither.
+let profile_of! : cli.Parsed -> :string;
 let profile_of! c =
     match [cli.get () c "profile", cli.flag_set c "release"] {
         [(), false] => "debug",
@@ -2055,6 +2130,7 @@ let profile_of! c =
 
 /// `-j N`, or one job per worker the VM runs, which is one per core up to
 /// the scheduler's cap.
+let jobs_of! : cli.Parsed -> :integer;
 let jobs_of! c =
     match cli.get () c "jobs" {
         () => (vm.scheduler! ()).[:workers else 1],
@@ -2064,6 +2140,7 @@ let jobs_of! c =
         },
     };
 
+let options_of! : cli.Parsed -> :map;
 let options_of! c =
     fold (fn o kv -> build.with_option (list.head kv) (list.nth 1 kv) o)
               build.options
@@ -2085,6 +2162,7 @@ let options_of! c =
                [:license_check, not (cli.flag_set c "no-license-check")],
                [:aot, cli.flag_set c "aot"]];
 
+let run_command! : cli.Parsed -> [:string] -> :any;
 let run_command! c theirs = {
     let o = options_of! c;
     // The project is loaded inside the arm that needs one. `mind new` and
@@ -2160,6 +2238,7 @@ let run_command! c theirs = {
 /// `mind` built from source, which has no toolchain to compare; and not once
 /// handed over, so two toolchains that disagreed could not pass a command
 /// back and forth.
+let pinned_toolchain! : cli.Parsed -> [:string] -> :any;
 let pinned_toolchain! c args = {
     let command = match cli.chosen c { () => "", cm => cli.command_name cm };
     let exempt = list.contains command ["toolchain", "help", "new", "init", ""];
@@ -2182,6 +2261,7 @@ let pinned_toolchain! c args = {
 };
 
 /// `mind toolchain ...`.
+let cmd_toolchain! : cli.Parsed -> [:string] -> :any;
 let cmd_toolchain! c args = match args {
     [] => toolchain_list! c,
     ["list"] => toolchain_list! c,
@@ -2201,6 +2281,7 @@ let cmd_toolchain! c args = match args {
     _ => fail! "toolchain takes list, install [VERSION], use VERSION, update, remove VERSION, which, or sign RELEASE SHA256SUMS",
 };
 
+let toolchain_list! : cli.Parsed -> :any;
 let toolchain_list! c = {
     let here = toolchain.installed! ();
     let current = toolchain.current! ();
@@ -2222,6 +2303,7 @@ let toolchain_list! c = {
 
 /// Install `wanted` -- `latest` or a version -- and, when `use` is said or
 /// nothing is in use yet, make it the one in use.
+let toolchain_install! : :string -> :bool -> :any;
 let toolchain_install! wanted use = {
     let installed_already = list.contains wanted (toolchain.installed! ());
     let v = if installed_already { wanted } else {
@@ -2242,6 +2324,7 @@ let toolchain_install! wanted use = {
     }
 };
 
+let toolchain_update! : :unit -> :any;
 let toolchain_update! () = match toolchain.channel! () {
     Result.error(why) => fail! why,
     Result.ok(ch) => {
@@ -2258,6 +2341,7 @@ let toolchain_update! () = match toolchain.channel! () {
 
 /// Sign a toolchain release: a `release` statement over its `SHA256SUMS`,
 /// written to `toolchain.sig` beside it. What the release workflow runs.
+let toolchain_sign! : cli.Parsed -> :string -> :string -> :any;
 let toolchain_sign! c release sums = {
     let seed = signing_seed! c;
     let h = "sha256:" + io.digest! sums;
@@ -2270,6 +2354,7 @@ let toolchain_sign! c release sums = {
     console.print! ("signed " + sums + " (" + h + ") as " + release + " by " + sign.spell (crypto.ed25519_public seed) + " into " + out)
 };
 
+let normal_main! : [:string] -> :any;
 let normal_main! args =
     match split_at_dashes args {
         [mine, theirs] =>
@@ -2292,6 +2377,7 @@ let normal_main! args =
 // and not passed on -- so `-C a -C b` is `a/b`, as for `git`, and a command
 // handed the rest never sees a directory it would resolve a second time.
 // `kept` is what was read and passed on, newest first.
+let dispatch! : [:string] -> cli.Parsed -> [:string] -> :any;
 let rec dispatch! kept c args = match args {
     ["help", "pack"] => commands.run! ["help"],
     ["help", "docs"] => docs.run! ["--help"],
@@ -2319,6 +2405,7 @@ let rec dispatch! kept c args = match args {
         },
     _ => normal_main! (list.append (list.reverse kept) args),
 };
+let main! : :any;
 let main! = {
     dispatch! [] (cli.parsed (%{}) []) (os.args! ())
 };

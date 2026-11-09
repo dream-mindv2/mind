@@ -87,6 +87,7 @@ let os_name o = match o { :linux => "linux", :macos => "macos", :windows => "win
 when test {
     import std.test;
 
+    let tests : [:any];
     let tests = [
         test.case "every spelling of a machine"
             $( test.eq! [ok :x86_64, ok :aarch64, ok :all, ok :x86_64]

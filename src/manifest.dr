@@ -23,11 +23,13 @@ import std.toml;
 import std.map;
 
 /// Where a package's manifest lives, and what it says.
+let make : :string -> :map -> :map;
 let make root doc = %{ :root => root, :doc => doc };
 
 /// No project at all: every setting at its default. A command that also works
 /// outside a project reads its settings through this, so "there is no manifest"
 /// is a manifest that says nothing rather than a second code path.
+let empty : :map;
 let empty = make "." (%{});
 
 /// A lone source file as a project of its own, for `mind run hello.dr` where
@@ -40,12 +42,15 @@ let lone file = make (path.dirname file)
     (%{ "package" => %{ "name" => path.stem file, "version" => "0.0.0",
                         "src" => ".", "entry" => path.basename file } });
 
+let root : :map -> :string;
 let root m = m.[:root else "."];
+let doc : :map -> :map;
 let doc m = m.[:doc else (%{})];
 
 /// The package's name; for a workspace that is not also a package, the
 /// workspace's (`[workspace] name`, or its directory's), which is what its
 /// own checks are named under.
+let name : :map -> :string;
 let name m = match toml.get "" (doc m) "package" "name" {
     "" => match toml.get "" (doc m) "workspace" "name" {
         "" => if is_workspace m { path.basename (root m) } else { "" },
@@ -55,6 +60,7 @@ let name m = match toml.get "" (doc m) "package" "name" {
 };
 
 /// Whether the manifest describes a package, as opposed to only a workspace.
+let is_package : :map -> :bool;
 let is_package m = toml.get "" (doc m) "package" "name" != "";
 
 // --- workspaces ------------------------------------------------------------------------
@@ -65,13 +71,16 @@ let is_package m = toml.get "" (doc m) "package" "name" != "";
 // the workspace's -- what belongs to no one member, such as a repository's
 // end-to-end tests.
 
+let is_workspace : :map -> :bool;
 let is_workspace m = map.has "workspace" (doc m);
 
 /// The members, as directories relative to the workspace.
+let members : :map -> [:any];
 let members m = match toml.get () (doc m) "workspace" "members" {
     () => [],
     ms => if type_of ms == :list { ms } else { [ms] },
 };
+let version : :map -> :any;
 let version m = toml.get "0.0.0" (doc m) "package" "version";
 
 /// Where this package's modules are. What the manifest says, relative to it;
@@ -81,6 +90,7 @@ let version m = toml.get "0.0.0" (doc m) "package" "version";
 /// for the entry file here and the compiler names the package's modules from
 /// here, so a project laid out as `src/main.dr` would otherwise build under one
 /// and not the other.
+let src! : :map -> :string;
 let src! m =
     match toml.get () (doc m) "package" "src" {
         () => {
@@ -93,6 +103,7 @@ let src! m =
 /// The file a build starts from: what `[package] entry` says, relative to the
 /// sources; otherwise `main.dr` beside them, or beside the manifest when a
 /// project keeps its library in `src/` and its program at the top.
+let entry! : :map -> :string;
 let entry! m =
     match toml.get () (doc m) "package" "entry" {
         () => {
@@ -124,20 +135,25 @@ let build_list m key =
     };
 
 /// `when` flags this package is always compiled with: `defines = ["fast"]`.
+let defines : :map -> [:string];
 let defines m = build_list m "defines";
 
 /// Extra directories to search for packages, relative to the manifest.
+let package_paths : :map -> [:string];
 let package_paths m = map (fn d -> path.join (root m) d) (build_list m "package-paths");
 
 /// Directories to search for loose modules: the compiler's `-I`.
+let includes : :map -> [:string];
 let includes m = map (fn d -> path.join (root m) d) (build_list m "includes");
 
 /// Modules the host registers at run time, so importing them compiles.
+let host_modules : :map -> [:string];
 let host_modules m = build_list m "host-modules";
 
 /// Where to fetch a locked package when its source cannot be reached:
 /// `[fetch] mirrors`, each a directory (relative to the manifest) or a URL.
 /// See fetch.dr for what a mirror holds.
+let mirrors : :map -> [:string];
 let mirrors m =
     list.map (fn mirror -> if str.find "://" mirror >= 0 { mirror } else { path.join (root m) mirror })
         (match toml.get () (doc m) "fetch" "mirrors" {
@@ -147,6 +163,7 @@ let mirrors m =
 
 /// The indexes to look names up in: `[fetch] indexes`, each a directory
 /// (relative to the manifest) or a URL holding `index.log` (index.dr).
+let indexes : :map -> [:string];
 let indexes m =
     list.map (fn place -> if str.find "://" place >= 0 { place } else { path.join (root m) place })
         (match toml.get () (doc m) "fetch" "indexes" {
@@ -156,20 +173,24 @@ let indexes m =
 
 /// `[fetch] index-max-age`: how old an index's newest checkpoint may be,
 /// overriding what its keepers promised -- a duration, `0` for no limit.
+let index_max_age : :map -> :any;
 let index_max_age m = toml.get () (doc m) "fetch" "index-max-age";
 
 /// Where the package is published from, for `mind publish`: `[package]
 /// repository`, or `()`.
+let repository : :map -> :any;
 let repository m = toml.get () (doc m) "package" "repository";
 
 /// Keys trusted for dependencies wherever they are in the graph, by the key
 /// they are imported as: `[trust] json = ["ed25519:.."]`. This is how a
 /// project vouches for the dependencies of its dependencies, whose entries it
 /// does not write.
+let trust : :map -> :map;
 let trust m = toml.section (doc m) "trust";
 
 /// `[fetch] require-signatures = true`: refuse a fetched dependency that no
 /// trusted key has signed, rather than take it unsigned.
+let require_signatures : :map -> :bool;
 let require_signatures m = toml.get false (doc m) "fetch" "require-signatures" == true;
 
 // --- `[payload]`: files carried in the image ---------------------------------
@@ -186,6 +207,7 @@ let require_signatures m = toml.get false (doc m) "fetch" "require-signatures" =
 
 /// This package's payloads as `[name, path]`, sorted by name so the image
 /// does not depend on the order a table happens to be read in.
+let payloads : :map -> [[:string]];
 let payloads m =
     list.sort (map (fn [n, p] -> [n, path.join (root m) (to_string p)])
                         (map.pairs (toml.section (doc m) "payload")));
@@ -193,6 +215,7 @@ let payloads m =
 /// What is wrong with this manifest's `[payload]`, or `()`. A name is how the
 /// compiler is told it -- `NAME=FILE` -- so it cannot hold an `=`; it may
 /// hold a `/`. `graphics/` is the page of an application (`graphics.dr`).
+let payload_problem : :map -> :string | :unit;
 let payload_problem m =
     list.first_or () (flat_map (fn [n, p] ->
         if n == "" || str.contains_str "=" n || str.starts_with "graphics/" n {
@@ -272,6 +295,7 @@ let checks_licenses m profile = match toml.get () (doc m) ("profile." + profile)
 
 /// Arguments passed to the compiler as written, for whatever this does not
 /// name yet. An escape hatch, and deliberately last on the command line.
+let compiler_flags : :map -> [:string];
 let compiler_flags m = build_list m "flags";
 
 /// Whether the program is built with what a debugger reads -- the names of
@@ -302,6 +326,7 @@ let aot m profile = match toml.get () (doc m) ("profile." + profile) "aot" {
 /// environment or the command line decides.
 /// A path (anything with a `/` in it) is the manifest's, as every other path
 /// in it is; a bare name is looked up as the VM or the shell would.
+let compiler : :map -> :string | :unit;
 let compiler m = match toml.get () (doc m) "build" "compiler" {
     () => (),
     c => if str.contains_str "/" c { path.join (root m) c } else { c },
@@ -309,10 +334,12 @@ let compiler m = match toml.get () (doc m) "build" "compiler" {
 
 /// Where the built image goes. `target/[<platforms>/]<profile>/<name>.dream`
 /// unless the manifest says; `build.output_of` says why.
+let output : :map -> :any;
 let output m = toml.get () (doc m) "build" "output";
 
 /// Where the image may run: `[build] target`, as `--target` takes it, one
 /// entry per `--target`. `any`, `linux`, `["linux", "macos"]`.
+let target : :map -> [:string];
 let target m = build_list m "target";
 
 /// The package's build script: `[build] script`, or `build.dr` beside the
@@ -324,6 +351,7 @@ let target m = build_list m "target";
 /// must. In a package whose modules sit beside its manifest a `build.dr` may
 /// just as well be an ordinary module called `build` -- `mind`'s own is -- and
 /// the name alone cannot tell the two apart; what a script has to say can.
+let script! : :map -> :string | :unit;
 let script! m =
     match toml.get () (doc m) "build" "script" {
         () => {
@@ -338,6 +366,7 @@ let script! m =
 
 /// Whether a script's text declares `plan` at the top level: a line that
 /// begins `let plan`, as every script's does.
+let declares_plan : :string -> :bool;
 let declares_plan text =
     list.any (fn line -> str.starts_with "let plan " line || str.starts_with "let plan:" line
                          || str.starts_with "let plan :" line)
@@ -345,6 +374,7 @@ let declares_plan text =
 
 /// The file `mind test` compiles with `--test`: `[test] entry`, for a library
 /// whose tests are gathered somewhere other than its program, or the entry.
+let test_entry! : :map -> :string;
 let test_entry! m =
     match toml.get () (doc m) "test" "entry" {
         () => entry! m,
@@ -354,6 +384,7 @@ let test_entry! m =
 /// The environment variables a build script may see, `[build] env`. Only
 /// these: a variable the script cannot read cannot change its plan, which is
 /// what lets an answer be reused.
+let script_env : :map -> [:string];
 let script_env m = build_list m "env";
 
 // --- options, configuration and profiles ----------------------------------------
@@ -365,10 +396,12 @@ let script_env m = build_list m "env";
 // config.dr says what the values mean and build.settle who wins.
 
 /// The `[options]` table, as written.
+let options : :map -> :map;
 let options m = toml.section (doc m) "options";
 
 /// The sections whose name is `prefix` followed by one more part, as
 /// `[[part, table], ..]`: `[config.sqlite]` is `["sqlite", ..]` under `config.`.
+let sections_under : :map -> :string -> [[:any]];
 let sections_under m prefix =
     flat_map (fn [name, table] ->
         if str.starts_with prefix name {
@@ -378,19 +411,23 @@ let sections_under m prefix =
         (map.pairs (doc m));
 
 /// `[[key, table], ..]` from every `[config.KEY]`.
+let configs : :map -> [[:any]];
 let configs m = sections_under m "config.";
 
 /// The profiles a manifest declares, by name.
+let profiles : :map -> [:string];
 let profiles m = map (fn [n, _] -> n) (sections_under m "profile.");
 
 /// Is `name` a profile this manifest can be built with? `debug` and `release`
 /// always are, declared or not.
+let has_profile : :map -> :string -> :bool;
 let has_profile m name =
     name == "debug" || name == "release" || map.has ("profile." + name) (doc m);
 
 /// A list-valued key of `[profile.NAME]`, read as `[build]`'s are. An
 /// undeclared `release` defines `release`, which is what `--release` has
 /// always meant; a declared one says for itself.
+let profile_list : :map -> :string -> :string -> [:string];
 let profile_list m name key = {
     let section = "profile." + name;
     match [map.has section (doc m), name, key] {
@@ -402,11 +439,15 @@ let profile_list m name key = {
     }
 };
 
+let profile_defines : :map -> :string -> [:string];
 let profile_defines m name = profile_list m name "defines";
+let profile_flags : :map -> :string -> [:string];
 let profile_flags m name = profile_list m name "flags";
+let profile_target : :map -> :string -> [:string];
 let profile_target m name = profile_list m name "target";
 
 /// `[[key, table], ..]` from every `[profile.NAME.config.KEY]`.
+let profile_configs : :map -> :string -> [[:any]];
 let profile_configs m name = sections_under m ("profile." + name + ".config.");
 
 // --- dependencies -------------------------------------------------------------
@@ -424,17 +465,21 @@ let profile_configs m name = sections_under m ("profile." + name + ".config.");
 
 /// A 7-to-40-digit hex string is a commit, which `git clone --branch` cannot
 /// take; anything else after the `#` is a tag or a branch, which it can.
+let looks_like_rev : :string -> :bool;
 let looks_like_rev r = {
     let n = str.byte_length r;
     n >= 7 && n <= 40 && str.span "0123456789abcdef" 0 r == n
 };
 
+let is_remote : :string -> :bool;
 let is_remote s = str.contains_str "://" s || str.starts_with "git@" s;
 
+let is_tarball : :string -> :bool;
 let is_tarball s =
     str.ends_with ".tar.gz" s || str.ends_with ".tgz" s;
 
 /// `"url#ref"` split at the `#`: `[url, ref]`, the ref `()` when there is none.
+let split_ref : :string -> [:any];
 let split_ref s =
     match str.find "#" s {
         i if i >= 0 => [str.slice 0 i s, str.slice (i + 1) (str.byte_length s - i - 1) s],
@@ -442,6 +487,7 @@ let split_ref s =
     };
 
 /// The spec a bare string stands for.
+let string_spec : :string -> :map;
 let string_spec s =
     match [is_remote s, is_tarball s] {
         [false, _] => %{ "path" => s },
@@ -453,6 +499,7 @@ let string_spec s =
         },
     };
 
+let normalize_spec : :any -> :map;
 let normalize_spec spec =
     match type_of spec {
         :string => string_spec spec,
@@ -460,6 +507,7 @@ let normalize_spec spec =
         _ => %{},
     };
 
+let section_deps : :map -> :string -> [[:any]];
 let section_deps m section =
     map (fn e -> [list.head e, normalize_spec (list.nth 1 e)])
              (toml.entries (doc m) section);
@@ -479,14 +527,19 @@ let build_dependencies : :map -> [[:string, :map]];
 let build_dependencies m = section_deps m "build-dependencies";
 
 /// The manifest file itself, for a message that has to say where a line was.
+let path : :map -> :string;
 let path m = path.join (root m) "mind.toml";
 
+let dep_name : [:any] -> :string;
 let dep_name d = list.head d;
+let dep_spec : [:any] -> :map;
 let dep_spec d = list.nth 1 d;
 
+let spec_get : [:any] -> :string -> :any;
 let spec_get d key = ((dep_spec d)).[key else ()];
 
 /// How a dependency is obtained: `:path`, `:git`, `:url`, or `:unknown`.
+let dep_kind : [:any] -> :atom;
 let dep_kind d =
     match [spec_get d "path", spec_get d "git", spec_get d "url"] {
         [(), (), ()] => :unknown,
@@ -500,6 +553,7 @@ let dep_kind d =
 /// An unpinned dependency is the one thing this refuses: "whatever is on the
 /// default branch today" is not a dependency, it is a moving target, and the
 /// build that breaks tomorrow will not say why.
+let dep_rev : [:any] -> [:any];
 let dep_rev d =
     match [spec_get d "tag", spec_get d "rev", spec_get d "branch"] {
         [(), (), ()] => [:none, ()],
@@ -510,14 +564,17 @@ let dep_rev d =
 
 /// The condition it hangs on, as written (`"not vendored"`), or `()` when
 /// it is always there. Read against the options of the package listing it.
+let dep_condition : [:any] -> :string | :unit;
 let dep_condition d = match spec_get d "when" { () => (), c => to_string c };
 
 /// Which versions it accepts, as written (`"^1.2"`), or `()` for any. Only
 /// the long form can say: `json = { git = .., tag = .., version = "^1.2" }`.
+let dep_requirement : [:any] -> :string | :unit;
 let dep_requirement d = match spec_get d "version" { () => (), r => to_string r };
 
 /// Where a dependency comes from, as a person would write it: for `mind deps`
 /// and for an error about it.
+let dep_source : [:any] -> :string;
 let dep_source d =
     match dep_kind d {
         :path => to_string (spec_get d "path"),
@@ -530,6 +587,7 @@ let dep_source d =
     };
 
 /// Read the manifest in `dir`, or `[:error, message]`.
+let load! : :string -> Result :map :string;
 let load! dir = {
     let path = path.join dir "mind.toml";
     match file.read! path {
@@ -550,6 +608,7 @@ let load! dir = {
 /// of `.dr` files is a package named by the key it was listed under. Answers
 /// `[:ok, m]`, `[:none]`, or `[:error, why]` for a manifest that is there and
 /// wrong -- that one is reported, because somebody meant it to say something.
+let load_dependency! : :string -> :any;
 let load_dependency! dir =
     match io.exists! (path.join dir "mind.toml") {
         false => [:none],
@@ -565,6 +624,7 @@ let load_dependency! dir =
 
 /// Walk up from `dir` looking for a manifest, so `mind build` works from
 /// anywhere inside a project -- the same way `git` finds its root.
+let find! : :string -> Result :map :string;
 let rec find! dir =
     match file.read! (path.join dir "mind.toml") {
         Option.none => {
@@ -584,8 +644,10 @@ let rec find! dir =
 // find the section, find the key in it, and replace, insert or drop that line.
 
 /// The line a dependency is written as.
+let quoted : :string -> :string;
 let quoted s = "\"" + s + "\"";
 
+let spec_line : :string -> :map -> :string;
 let spec_line key spec = {
     let field k = match spec.[k else ()] { () => [], v => [k + " = " + quoted (to_string v)] };
     let keys = match spec.["keys" else ()] {
@@ -596,9 +658,11 @@ let spec_line key spec = {
     key + " = { " + str.join_str ", " fields + " }"
 };
 
+let is_header : :string -> :bool;
 let is_header line = str.starts_with "[" (str.trim line);
 
 /// Does `line` set `key`? `key = ..`, `key= ..` and a quoted `"key" = ..` all do.
+let sets_key : :string -> :string -> :bool;
 let sets_key key line = {
     let t = str.trim line;
     let rest_after prefix =
@@ -646,9 +710,11 @@ let put_line key line body =
         },
     };
 
+let join_lines : [:string] -> :string;
 let join_lines ls = str.join_str "\n" ls;
 
 /// `text` with `key = spec` written into `[section]`, replacing what was there.
+let with_dependency : :string -> :string -> :map -> :string -> :string;
 let with_dependency section key spec text = {
     let line = spec_line key spec;
     match split_section section (str.split "\n" text) {
@@ -710,6 +776,7 @@ let with_version_in from to text = join_lines (list.map (fn l -> if version_line
 } else { l }) (str.split "\n" text));
 
 /// `[text, removed]`: `text` without the line setting `key` in `[section]`.
+let without_dependency : :string -> :string -> :string -> [:any];
 let without_dependency section key text =
     match split_section section (str.split "\n" text) {
         [_, (), _, _] => [text, false],
@@ -723,9 +790,12 @@ let without_dependency section key text =
 when test {
     import std.test;
 
+    let of : :string -> :map;
     let of text = make "." (toml.parse_or %{} text);
+    let dep_of : :string -> [:any];
     let dep_of text = list.head (dependencies (of text));
 
+    let tests : [:any];
     let tests = [
         test.case "the version moves and nothing else does" $( test.eq!
             "# top\n[package]\nname = \"d\"\nversion = \"1.2.4\"\n\n[x]\nversion = \"9\""

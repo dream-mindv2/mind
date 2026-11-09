@@ -82,6 +82,7 @@ let current_link! () = path.join (home! ()) "current";
 
 /// The site a toolchain's releases are announced on: `$MIND_TOOLCHAIN_SITE`,
 /// which may be a directory, or the toolchain's GitHub Pages.
+let default_site : :string;
 let default_site = "https://dream-mindv2.github.io/toolchain";
 
 let site! : :unit -> :string;
@@ -90,6 +91,7 @@ let site! () = match os.env! "MIND_TOOLCHAIN_SITE" { () => default_site, "" => d
 /// The keys a toolchain release may be signed by, as `mind sign` spells them.
 /// A new key is brought in by a `rotate` statement from one of these in the
 /// release's `toolchain.sig`, not by a new `mind`.
+let keys : [:string];
 let keys = ["ed25519:2de62faf1dbbe86af705d3e9123a0b3cc5fe7488ba4b9e7a7c43aa6e049f479e"];
 
 // --- what this machine is -----------------------------------------------------------
@@ -193,6 +195,7 @@ let download! url dest = if is_url url {
     match try! { file.copy! url dest; Result.ok () } catch e { Result.error ("cannot copy " + url + ": " + to_string e) } { r => r }
 };
 
+priv let is_url : :string -> :bool;
 priv let is_url u = str.starts_with "https://" u || str.starts_with "http://" u || str.starts_with "file://" u;
 
 let channel! : :unit -> Result Channel :string;
@@ -268,6 +271,7 @@ let install! ch v = {
     }
 };
 
+priv let fetch_and_unpack! : Channel -> :string -> :string -> :string -> :string -> :string -> :any;
 priv let fetch_and_unpack! ch v host tarball work dir = {
     console.print! ("downloading toolchain " + v + " for " + host)
     let sums_path = path.join work "SHA256SUMS";
@@ -411,6 +415,7 @@ let delegate! v args = {
 when test {
     import std.test;
 
+    let tests : [:any];
     let tests = [
         test.case "versions sort as numbers, newest first"
             $( test.eq! ["0.10.0", "0.9.2", "0.9.0"] (newest_first ["0.9.0", "0.10.0", "0.9.2"]) ),

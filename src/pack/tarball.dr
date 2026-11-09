@@ -73,11 +73,13 @@ when test {
     import std.test;
     import std.toml;
 
+    let sp! : :string -> :any;
     let sp! a = match toml.parse ("[package]\nname = \"demo\"\nversion = \"1.0\"\n[ship]\nsummary = \"x\"\n") {
         Result.ok(doc) => match spec.of_doc "." doc (%{ "arch" => a, "os" => "linux" }) (%{}) { Result.ok(s) => s, other => raise! other },
         other => raise! other,
     };
 
+    let tests : [:any];
     let tests = [
         test.case "the name says what it runs on"
             $( test.eq! ["demo-1.0-linux-x86_64.tar.gz", "demo-1.0.tar.gz"]

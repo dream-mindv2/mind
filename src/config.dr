@@ -216,6 +216,7 @@ let is_name_char : :char -> :bool;
 let is_name_char c = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
                      || c == '_' || c == '.';
 
+let lex_string : [:char] -> [:char] -> :any;
 let rec lex_string cs acc =
     match cs {
         [] => err "a string in a condition is not closed",
@@ -225,6 +226,7 @@ let rec lex_string cs acc =
 
 /// The tokens of a condition: `[:name, s]`, `[:str, s]`, and the operators as
 /// atoms.
+let lex : [:char] -> [:any] -> :any;
 let rec lex cs acc =
     match cs {
         [] => Result.ok (list.reverse acc),
@@ -247,6 +249,7 @@ let rec lex cs acc =
                        else { Result.error ("`" + str.of_chars [c] + "` cannot be in a condition") },
     };
 
+let parse_or : [:any] -> :any;
 let rec parse_or ts =
     match parse_and ts {
         [:ok, l, [:or, ..rest]] => match parse_or rest {
@@ -256,6 +259,7 @@ let rec parse_or ts =
         other => other,
     };
 
+let parse_and : [:any] -> :any;
 let rec parse_and ts =
     match parse_unary ts {
         [:ok, l, [:and, ..rest]] => match parse_and rest {
@@ -265,6 +269,7 @@ let rec parse_and ts =
         other => other,
     };
 
+let parse_unary : [:any] -> :any;
 let rec parse_unary ts =
     match ts {
         [[:name, "not"], ..rest] => match parse_unary rest {
@@ -300,6 +305,7 @@ let parse_condition text =
     };
 
 /// Every name a condition reads.
+let names : :any -> [:string];
 let rec names cond =
     match cond {
         [:flag, n] => [n],
@@ -317,6 +323,7 @@ let on v = v != () && v != false && v != "false";
 /// Evaluate a condition. `option name` answers `[:ok, value]` for a name that
 /// is a package option and `()` for one that is not; `settings` is the
 /// program's, a map of name to value with `true` for a bare flag.
+let holds : (:string -> :any) -> :map -> :any -> :bool;
 let rec holds option settings cond =
     match cond {
         [:const, b] => b,
@@ -344,8 +351,10 @@ when test {
     // The payload either way: a test that wanted the other one fails on it.
     let decl_of name spec : :any = match declare name spec { Result.ok(d) => d, Result.error(why) => why };
     let cond text : :any = match parse_condition text { Result.ok(c) => c, Result.error(why) => why };
+    let none : :any -> :unit;
     let none n = ();
 
+    let tests : [:any];
     let tests = [
         test.case "a declaration with a type and a default"
             $( test.eq! [:bool, false, "from source"]

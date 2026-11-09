@@ -60,10 +60,13 @@ import std.list;
 import std.str;
 
 /// The file a package's signatures are in, at its root.
+let file_name : :string;
 let file_name = "mind.sig";
 
+let algorithm : :string;
 let algorithm = "ed25519:";
 
+let header : :string;
 let header = "# Signed statements about this package, one per line. Written by `mind sign`, `rotate` and `revoke`.";
 
 // --- keys ----------------------------------------------------------------------------
@@ -271,6 +274,7 @@ let latest rotations key = {
     go key [key]
 };
 
+let spelled : [:string] -> :string;
 let spelled keys = str.join_str ", " (list.map spell keys);
 
 /// Whether a package that hashes to `h` and carries `text` (its signature
@@ -322,20 +326,34 @@ let decide p h text = {
 when test {
     import std.test;
 
+    let seed : :string;
     let seed = crypto.unhex "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb";
+    let other : :string;
     let other = crypto.unhex "c5aa8df43f9f837bedb7442f31dcb7b166d38535076f094b85ce3a2e0b4458f7";
+    let third : :string;
     let third = crypto.unhex "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60";
+    let pub : :string;
     let pub = crypto.ed25519_public seed;
+    let pub2 : :string;
     let pub2 = crypto.ed25519_public other;
+    let pub3 : :string;
     let pub3 = crypto.ed25519_public third;
+    let h : :string;
     let h = "sha256:" + str.repeat 64 "a";
+    let file : [:any] -> :string;
     let file ss = list.fold (fn t s -> with_statement t s) "" ss;
+    let signed : :string;
     let signed = file [release seed "v1" h];
+    let trusting : [:string] -> Policy;
     let trusting keys = Policy.set_roots keys (Policy.new ());
+    let error_of : :any -> :any;
     let error_of r = match r { Result.error(why) => why, Result.ok(_) => "ok" };
+    let says : :string -> :any -> :bool;
     let says text r = str.find text (error_of r) >= 0;
+    let signer_of : :any -> :any;
     let signer_of r = match r { Result.ok(v) => Verdict.signer v, _ => :refused };
 
+    let tests : [:any];
     let tests = [
         test.case "a key is ed25519: and 32 bytes of hex"
             $( test.eq! [pub, pub, (), (), ()]

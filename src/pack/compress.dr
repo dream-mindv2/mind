@@ -92,6 +92,7 @@ let file! c path = match c {
 when test {
     import std.test;
 
+    let tests : [:any];
     let tests = [
         test.case "every spelling"
             $( test.eq! [ok :auto, ok :zstd, ok :gzip, :error]

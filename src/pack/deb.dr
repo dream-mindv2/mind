@@ -157,6 +157,7 @@ when test {
     import std.test;
     import std.toml;
 
+    let sp! : :unit -> :any;
     let sp! () = match toml.parse ("[package]\nname = \"demo\"\nversion = \"1.0\"\n[ship]\nsummary = \"a demo\"\n"
                                    + "description = \"First.\\n\\nSecond.\"\nmaintainer = \"A <a@b>\"\narch = \"amd64\"\n"
                                    + "[ship.deb]\ndepends = [\"libc6 >= 2.31\", \"libssl3 | libssl1.1\"]\n") {
@@ -164,8 +165,10 @@ when test {
         other => raise! other,
     };
 
+    let lay : Layout;
     let lay = Layout.make [item.Item.file "usr/bin/demo" 493 "x" 2048, item.Item.link "usr/bin/d" "demo"] [] 0;
 
+    let tests : [:any];
     let tests = [
         test.case "the file is named as Debian names it"
             $( test.eq! "demo_1.0-1_amd64.deb" (file_name (sp! ())) ),

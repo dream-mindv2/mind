@@ -184,9 +184,12 @@ let file! path style epoch items = {
 when test {
     import std.test;
 
+    let long : :string;
     let long = str.repeat 30 "abcd/" + "file.txt";
+    let longest : :string;
     let longest = str.repeat 300 "x";
 
+    let tests : [:any];
     let tests = [
         test.case "a pax record counts its own length"
             $( test.eq! ["13 path=abcd\n", "101 path=" + str.repeat 91 "a" + "\n"]

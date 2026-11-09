@@ -319,11 +319,13 @@ when test {
     import std.test;
     import std.toml;
 
+    let sp! : :unit -> :any;
     let sp! () = match toml.parse "[package]\nname = \"demo\"\nversion = \"1.0\"\n[ship]\nsummary = \"x\"\n" {
         Result.ok(doc) => match spec.of_doc "." doc (%{}) (%{}) { Result.ok(s) => s, other => raise! other },
         other => raise! other,
     };
 
+    let tests : [:any];
     let tests = [
         test.case "modes are octal however they are written"
             $( test.eq! [ok 493, ok 493, ok 493, ok 420, :error]

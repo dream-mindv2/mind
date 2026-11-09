@@ -62,10 +62,13 @@ mapping Entry {
 }
 
 /// The section revocations are kept in.
+let revoked_section : :string;
 let revoked_section = "revoked";
 
+let file_name : :string;
 let file_name = "mind.lock";
 
+let header : :string;
 let header = "# What this project's dependencies resolved to. Written by `mind`;\n"
              + "# `mind update` moves it. Commit it with the manifest.\n";
 
@@ -76,8 +79,10 @@ let sorted entries = {
     list.sort_on (fn e -> [rank e, Entry.section e, Entry.key e]) entries
 };
 
+let field : :string -> :any -> [:string];
 let field name v = match v { () => [], x => [name + " = " + toml.quote (to_string x)] };
 
+let list_field : :string -> [:any] -> [:string];
 let list_field name vs = match vs {
     [] => [],
     xs => [name + " = [" + str.join_str ", " (list.map (fn x -> toml.quote (to_string x)) xs) + "]"],
@@ -188,12 +193,14 @@ let merge old new complete = {
     list.append new (filter (fn o -> not (seen.[at o else false])) kept)
 };
 
+let load! : :string -> :any;
 let load! root = match file.read! (path.join root file_name) { Option.none => [], Option.some(text) => parse text };
 
 /// Write the lock, if it changed. A lock that would record nothing is not
 /// created where there was none: a project with no dependencies, or a lone
 /// file run by `mind run hello.dr`, has nothing to pin, and a file appearing
 /// beside it would only be something to delete.
+let save! : :string -> :any -> :any;
 let save! root entries = {
     let path = path.join root file_name;
     let text = render entries;
@@ -206,11 +213,16 @@ let save! root entries = {
 when test {
     import std.test;
 
+    let a : Entry;
     let a = Entry.make "program" "json" "https://x/json#v1" "abc" "1.0.0" "sha256:01" "ed25519:aa" ["ed25519:aa"] [];
+    let b : Entry;
     let b = Entry.new "build" "gen" |> Entry.set_source "../gen" |> Entry.set_version "0.2.0";
+    let r : :any;
     let r = revocation "ed25519:bb" "https://x/json#v1";
+    let keys : [Entry] -> [[:string]];
     let keys es = list.map (fn e -> [Entry.section e, Entry.key e]) es;
 
+    let tests : [:any];
     let tests = [
         test.case "a lock is sections of one line per package, sorted, revocations last"
             $( test.eq! (header + "\n[program]\n\"json\" = { source = \"https://x/json#v1\", version = \"1.0.0\", commit = \"abc\", hash = \"sha256:01\", signer = \"ed25519:aa\", keys = [\"ed25519:aa\"] }\n\n[build]\n\"gen\" = { source = \"../gen\", version = \"0.2.0\" }\n\n[revoked]\n\"ed25519:bb\" = { source = \"https://x/json#v1\" }\n")

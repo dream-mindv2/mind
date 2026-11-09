@@ -35,8 +35,11 @@ union Status { ok, warn, fail }
 /// One thing looked at: what it is, what was found, and how to put it right.
 group Check { status : Status, name : :string, found : :string, fix : :string }
 
+priv let ok : :string -> :string -> Check;
 priv let ok name found = Check.make Status.ok name found "";
+priv let warn : :string -> :string -> :string -> Check;
 priv let warn name found fix = Check.make Status.warn name found fix;
+priv let fail : :string -> :string -> :string -> Check;
 priv let fail name found fix = Check.make Status.fail name found fix;
 
 /// The lines `dream --version` printed, or `[]` when it would not run.
@@ -85,6 +88,7 @@ let rc_files : [:string];
 let rc_files = ["~/.zshrc", "~/.zshenv", "~/.bashrc", "~/.bash_aliases", "~/.profile",
                 "~/.config/fish/config.fish", "/etc/zshrc", "/etc/bashrc", "/etc/bash.bashrc", "/etc/profile"];
 
+priv let alias_pattern : :any;
 priv let alias_pattern = regex.compile "^\\s*alias\\s+(dream|mind|dreams|lucid)(?:=|\\s+)['\"]?([^'\"\\n]*)";
 
 /// The aliases one file's text gives, as `[line number, name, what it runs]`.
@@ -178,6 +182,7 @@ priv let install_dirs_of! vm lines = match feature lines "install" {
 };
 
 /// The first of `dirs` holding `entry`, or `()`.
+priv let first_holding! : [:string] -> :string -> Option :string;
 priv let first_holding! dirs entry = list.find (fn! d -> io.exists! (path.join d entry)) dirs;
 
 /// What a build would compile with: the compiler image and the standard
@@ -301,6 +306,7 @@ let report! m o = {
 
 when test {
     import std.test;
+    let tests : [:any];
     let tests = [
         test.case "an alias is read in either shell's spelling" $(test.eq!
             [[2, "mind", "dream -x mind"], [3, "lucid", "dream -x lucid"]]

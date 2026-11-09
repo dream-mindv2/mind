@@ -133,6 +133,7 @@ let toolchain_script sp assets =
 
 /// `dream` and `mind` linked where programs are found; see "On `PATH` the
 /// standard way" above.
+priv let path_setup : :string;
 priv let path_setup =
     "if [ \"$os\" = android ] && [ -n \"${PREFIX:-}\" ]; then bin=$PREFIX/bin; else bin=${XDG_BIN_HOME:-$HOME/.local/bin}; fi\n"
     + "mkdir -p \"$bin\"\n"
@@ -159,6 +160,7 @@ priv let path_setup =
     + "    fi ;;\nesac\n";
 
 /// The loader wrap, for a Linux without the usual loader.
+priv let loader_wrap : :string;
 priv let loader_wrap =
     "  if [ \"$os\" = linux ]; then\n"
     + "    if [ \"$machine\" = aarch64 ]; then fhs=/lib/ld-linux-aarch64.so.1; else fhs=/lib64/ld-linux-x86-64.so.2; fi\n"
@@ -192,6 +194,7 @@ let make! sp dest = {
 when test {
     import std.test;
 
+    let tests : [:any];
     let tests = [
         test.case "an arm per tarball"
             $( test.eq! ["  linux-x86_64) file='f'; url='u'; sum='s' ;;\n", "  *) file='f'; url='u'; sum='s' ;;\n"]

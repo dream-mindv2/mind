@@ -53,12 +53,15 @@ import std.map;
 
 import sign;
 
+let file_name : :string;
 let file_name = "index.log";
 
 /// The `PREV` of the first line.
+let genesis : :string;
 let genesis = "sha256:" + str.repeat 64 "0";
 
 /// What a submitted entry carries in place of `PREV`: the appender fills it.
+let unplaced : :string;
 let unplaced = "-";
 
 /// One line: its kind, `PREV`, its fields, and its signatures as `[key,
@@ -187,7 +190,9 @@ let signers e keys =
         [sign.spell k]
     } else { [] }) (Entry.sigs e));
 
+let by_keepers : State -> Entry -> :bool;
 let by_keepers s e = list.length (signers e (State.keepers s)) >= State.threshold s;
+let by_key : Entry -> :any -> :bool;
 let by_key e key = key != () && list.length (signers e [key]) > 0;
 
 /// One more line onto a verified log, or why it does not fit.
@@ -370,32 +375,49 @@ let search s text =
 when test {
     import std.test;
 
+    let keeper : :string;
     let keeper = crypto.unhex "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60";
+    let alice : :string;
     let alice = crypto.unhex "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb";
+    let bob : :string;
     let bob = crypto.unhex "c5aa8df43f9f837bedb7442f31dcb7b166d38535076f094b85ce3a2e0b4458f7";
+    let key : :string -> :string;
     let key seed = sign.spell (crypto.ed25519_public seed);
+    let h : :string;
     let h = "sha256:" + str.repeat 64 "a";
     // A log made the way an appender makes one: each entry signed, then placed.
+    let log : [:any] -> :string;
     let log entries = list.fold (fn text e -> {
         let s = match verify text { Result.ok(s) => s, Result.error(_) => State.new () };
         text + render (place s e) + "\n"
     }) "" entries;
+    let start : :any;
     let start = sign_with keeper (entry "keepers" ["1", "1", key keeper, key keeper, "7d"]);
+    let admit : :string -> :string -> :any;
     let admit n owner = sign_with keeper (entry "admit" [n, key owner]);
+    let pub : :string -> :string -> :string -> :any;
     let pub seed n r = sign_with seed (entry "publish" [n, "https://x/" + n, r, h]);
+    let state : [:any] -> State;
     let state entries = match verify (log entries) { Result.ok(s) => s, Result.error(why) => State.new () };
     // A checkpoint vouches for the head it is placed on, so it is signed after
     // it is placed, as `mind index checkpoint` does.
+    let checkpointed : :string -> :string -> :any -> :string;
     let checkpointed text seed stamp = {
         let s = match verify text { Result.ok(s) => s, Result.error(_) => State.new () };
         text + render (sign_with seed (place s (entry "checkpoint" [stamp]))) + "\n"
     };
+    let state_of : :string -> State;
     let state_of text = match verify text { Result.ok(s) => s, Result.error(why) => State.new () };
+    let error_of : :any -> :any;
     let error_of r = match r { Result.error(why) => why, Result.ok(_) => "ok" };
+    let says : :string -> :any -> :bool;
     let says text r = str.find text (error_of r) >= 0;
+    let release_of : :any -> :any;
     let release_of r = match r { Result.ok([rel, _]) => list.head rel, Result.error(why) => why };
+    let good : [:any];
     let good = [start, admit "json" alice, pub alice "json" "v1.0.0", pub alice "json" "v1.2.0", pub alice "json" "v2.0.0"];
 
+    let tests : [:any];
     let tests = [
         test.case "a log of signed entries verifies"
             $( test.eq! 5 (length (state good)) ),

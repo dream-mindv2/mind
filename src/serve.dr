@@ -37,12 +37,14 @@ let opts = [
     cli.value "" "fallback" "FILE" "a file under DIR that answers a path naming nothing, such as index.html for an application whose routes are paths",
 ];
 
+let usage : :string;
 let usage = "mind serve -- serve a directory over HTTP, on this machine\n\nusage: mind serve [options] [DIR]\n\n"
     + cli.options_help (list.append opts [cli.flag "h" "help" "show serving options"]) + "\n\n"
     + "DIR is the current directory when it is not given. Only GET and HEAD are\n"
     + "answered; dotfiles and symbolic links are never served. Listening anywhere\n"
     + "but 127.0.0.1 shares DIR with whoever can reach this machine.\n";
 
+let fail! : :string -> :any;
 let fail! why = {
     console.error! ("mind serve: " + why)
     os.exit! 1

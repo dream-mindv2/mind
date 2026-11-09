@@ -50,6 +50,7 @@ import pack.tarball;
 
 let version : :string = "0.2.0";
 
+let opts : [cli.Option];
 let opts = [
     cli.section "what to package",
     cli.value "C" "dir" "DIR" "the project to package (default: here, or above)",
@@ -68,6 +69,7 @@ let opts = [
     cli.flag "" "version" "print the packager version",
 ];
 
+let command_spec : [cli.Command];
 let command_spec = [
     cli.command "init" "add a [ship] section to the manifest, to fill in" [],
     cli.command "check" "read the manifest and every file it names, and say what is wrong" [],
@@ -84,6 +86,7 @@ let command_spec = [
     cli.command "help" "this message" [],
 ];
 
+let usage : :string;
 let usage = "mind pack -- a program made into what each platform installs
 
 usage: mind pack <command> [options]
@@ -164,6 +167,7 @@ let format_problems sp lay = {
     }) outcomes
 };
 
+let cmd_check! : cli.Parsed -> :any;
 let cmd_check! c = {
     let sp = spec! c;
     let lay = layout! sp;
@@ -178,6 +182,7 @@ let cmd_check! c = {
             + to_string (layout.installed_size items) + " bytes, ready to package")
 };
 
+let cmd_files! : cli.Parsed -> :any;
 let cmd_files! c = {
     let sp = spec! c;
     let lay = layout! sp;
@@ -188,41 +193,49 @@ let cmd_files! c = {
     })) (Layout.items lay)
 };
 
+let cmd_deb! : cli.Parsed -> :any;
 let cmd_deb! c = {
     let sp = spec! c;
     made! (deb.make! sp (layout! sp) (out! c) (compression c))
 };
 
+let cmd_rpm! : cli.Parsed -> :any;
 let cmd_rpm! c = {
     let sp = spec! c;
     made! (rpm.make! sp (layout! sp) (out! c) (compression c))
 };
 
+let cmd_arch! : cli.Parsed -> :any;
 let cmd_arch! c = {
     let sp = spec! c;
     made! (arch.make! sp (layout! sp) (out! c) (compression c))
 };
 
+let cmd_tarball! : cli.Parsed -> :any;
 let cmd_tarball! c = {
     let sp = spec! c;
     made! (tarball.make! sp (layout! sp) (out! c) (compression c))
 };
 
+let cmd_brew! : cli.Parsed -> :any;
 let cmd_brew! c = {
     let sp = spec! c;
     made! (brew.make! sp (layout! sp) (out! c))
 };
 
+let cmd_pkgbuild! : cli.Parsed -> :any;
 let cmd_pkgbuild! c = {
     let sp = spec! c;
     made! (aur.make! sp (layout! sp) (out! c))
 };
 
+let cmd_installer! : cli.Parsed -> :any;
 let cmd_installer! c = {
     let sp = spec! c;
     made! (installer.make! sp (out! c))
 };
 
+let cmd_sums! : cli.Parsed -> :any;
 let cmd_sums! c = made! (sums.make! (out! c));
 
 /// Say what was made, or why not, and answer whether it was.
@@ -241,6 +254,7 @@ let report! r = match r {
 /// Everything, each format going on when another fails, and failing at the
 /// end if any did. The tarball is gzip whatever `--compress` says, since it
 /// is what the formula, the PKGBUILD and the install script read.
+let cmd_all! : cli.Parsed -> :any;
 let cmd_all! c = {
     let sp = spec! c;
     let lay = layout! sp;
@@ -293,6 +307,7 @@ let skeleton name summary maintainer =
     + "[ship.deb]\ndepends = [\"dream\"]\n\n[ship.rpm]\ndepends = [\"dream\"]\n\n"
     + "[ship.arch]\ndepends = [\"dream\"]\n\n[ship.brew]\ndepends = [\"dream\"]\n";
 
+let cmd_init! : cli.Parsed -> :any;
 let cmd_init! c = {
     let path = manifest_path! c;
     let text = match file.read! path { Option.none => "", Option.some(t) => t };
@@ -314,6 +329,7 @@ let cmd_init! c = {
     console.print! ("added [ship] to " + path + ": fill it in, then run `mind pack check`")
 };
 
+let run! : [:string] -> :any;
 let run! args = {
     match cli.commands opts command_spec args {
         Result.error(why) => fail! (why + "\n\n" + usage),
@@ -351,6 +367,7 @@ let run! args = {
 
 // Resolve the manifest the same way as the other mind commands. Explicit
 // -m remains relative to the working directory, for release automation.
+let manifest_path! : cli.Parsed -> :string;
 let manifest_path! c = match cli.get () c "manifest" {
     () => match manifest.find! (cli.get (os.cwd! ()) c "dir") {
         Result.ok(m) => path.join (manifest.root m) "mind.toml",

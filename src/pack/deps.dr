@@ -71,6 +71,7 @@ let parse_all ds = Result.all (map parse ds);
 when test {
     import std.test;
 
+    let tests : [:any];
     let tests = [
         test.case "every spelling reads the same"
             $( test.eq! [Dep.make "libffi" ">=" "3.4", Dep.make "libffi" ">=" "3.4", Dep.make "libffi" ">=" "3.4", Dep.new "libc6"]

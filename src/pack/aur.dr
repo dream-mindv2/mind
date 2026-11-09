@@ -128,6 +128,7 @@ let make! sp lay dest = {
 when test {
     import std.test;
 
+    let tests : [:any];
     let tests = [
         test.case "an array"
             $( test.eq! "('x86_64' 'aarch64')" (array ["x86_64", "aarch64"]) ),
