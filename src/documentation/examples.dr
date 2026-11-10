@@ -119,7 +119,7 @@ let run! ctx code = try! {
 /// time, and answer `[results, unexpected]`: the context's `:results`, each
 /// distinct example's `[html, clean]` by its code, and a line for each example
 /// whose outcome is not the one its fence promises.
-let run_all! : :map -> :integer -> [:any] -> :any;
+let run_all! : :map -> :integer -> [:any] -> [:any, :any];
 let run_all! ctx jobs sources = {
     let wanted = flat_map (fn [page, text, m] ->
         map (fn [code, fails] -> [page, code, fails, m]) (found (str.split "\n" text))) sources;

@@ -406,7 +406,7 @@ let report_build! m o label quiet = {
 
 /// Hand the program's output on as our own, and its exit code with it. A build
 /// tool that swallows the status of what it ran is no use in a script.
-let relay! : :any -> :any;
+let relay! : :any -> :ok;
 let relay! r =
     match r {
         [code, out, err] => {
@@ -854,7 +854,7 @@ let cmd_info! m o = {
 /// Every package's options: what each declares, and what this build sets it
 /// to. A setting has five places it can come from, so "what is `threads`
 /// going to be?" deserves an answer that does not need them all read.
-let cmd_options! : :map -> :map -> :any;
+let cmd_options! : :map -> :map -> :ok;
 let cmd_options! m o = {
     let g = graph_of! m o;
     let values = g.[:options else (%{})];
@@ -905,7 +905,7 @@ let describe n = {
     key + version + called + "  " + manifest.dep_source (build.node_dep n)
 };
 
-let cmd_deps! : :map -> :map -> :any;
+let cmd_deps! : :map -> :map -> :ok;
 let cmd_deps! m o = {
     console.print! (to_string (manifest.name m) + " v" + to_string (manifest.version m))
     let g = graph_of! m o;
@@ -934,7 +934,7 @@ let cmd_deps! m o = {
 
 /// Who needs what. A package reached a second time is shown once and marked,
 /// so a diamond does not print its whole subtree twice and a cycle stops.
-let cmd_tree! : :map -> :map -> :any;
+let cmd_tree! : :map -> :map -> :ok;
 let cmd_tree! m o = {
     console.print! (to_string (manifest.name m) + " v" + to_string (manifest.version m))
     let g = graph_of! m o;
@@ -976,7 +976,7 @@ let cmd_fetch! m o = {
 /// named -- and fetch them again. A tag or a commit comes back the same bytes,
 /// so this is only ever interesting for a branch; it does them all because
 /// "the cache is wrong" is the other reason to run it.
-let cmd_update! : :map -> :map -> [:string] -> :any;
+let cmd_update! : :map -> :map -> [:string] -> :ok;
 let cmd_update! m o names = {
     // Not through the lock: the lock disagreeing is often why this is being
     // run, and this walk only decides what to fetch again.
@@ -1699,7 +1699,7 @@ let cmd_index! c args = {
 /// Build the package in `dir` as reproducibly as it can be built, and answer
 /// the image's hash and where it is. The hash is forced here, while `dir`
 /// is still there.
-let build_reproducibly! : :string -> :map -> :any;
+let build_reproducibly! : :string -> :map -> [:any, :any];
 let build_reproducibly! dir o = {
     let m = match manifest.load! dir { Result.ok(m) => m, Result.error(why) => fail! why };
     let o2 = build.with_option :reproducible true o;
